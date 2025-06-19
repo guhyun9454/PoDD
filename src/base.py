@@ -196,6 +196,7 @@ def main_worker(args):
 
     if model.module.data.get_device() == 0 and args.wandb:
         wandb.init(
+            entity="TGwithIU",
             project=f"PoDD",
             name=args.name,
             config=vars(args))
