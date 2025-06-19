@@ -62,14 +62,15 @@ def main_worker(args):
 
     # 0. Preprocess datasets
     print('==> Preparing data..')
-    transform_train, transform_test = get_transform(args.dataset)
+    transform_train, transform_test = get_transform(args.dataset, args)
 
     print(transform_train, transform_test)
     train1, train2, testset, num_classes, shape, process_config = get_dataset(args.dataset,
                                                                               args.data_root,
                                                                               transform_train,
                                                                               transform_test,
-                                                                              zca=args.zca)
+                                                                              zca=args.zca,
+                                                                              args=args)
 
     zca_inverse = None
     if args.zca and process_config is not None:

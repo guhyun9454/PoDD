@@ -55,7 +55,7 @@ def get_arch(arch, num_classes, channel, im_size):
     raise NotImplementedError
 
 
-def get_dataset(dataset, root, transform_train, transform_test, zca=False):
+def get_dataset(dataset, root, transform_train, transform_test, zca=False, args=None):
     """ Returns the dataset, the number of classes, and the shape of the images """
     process_config = None
 
@@ -136,7 +136,9 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
     elif dataset in ['imagenet-nette', 'imagenet-woof', 'imagenet-cats', 
                      'imagenet-fruits', 'imagenet-birds', 'imagenet-yellow']:
         num_classes = 10
-        shape = [3, 224, 224]  # ImageNet 표준 크기
+        # args가 있으면 args.image_size를 사용, 없으면 기본값 128 사용
+        image_size = args.image_size if args and hasattr(args, 'image_size') else 128
+        shape = [3, image_size, image_size]
         
         root = DATA_PATHS[dataset]
         train_dir = os.path.join(root, 'train')
@@ -171,7 +173,7 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
     return trainset, trainset_test, testset, num_classes, shape, process_config
 
 
-def get_transform(dataset):
+def get_transform(dataset, args=None):
     """ Returns the default transformation for the given dataset """
     print(dataset)
     if dataset == 'cifar10':
@@ -220,16 +222,21 @@ def get_transform(dataset):
 
     elif dataset in ['imagenet-nette', 'imagenet-woof', 'imagenet-cats', 
                      'imagenet-fruits', 'imagenet-birds', 'imagenet-yellow']:
+        # args가 있으면 args.image_size를 사용, 없으면 기본값 128 사용
+        image_size = args.image_size if args and hasattr(args, 'image_size') else 128
+        
         # ImageNet 표준 정규화 사용
         default_transform_train = transforms.Compose([
+            transforms.Resize((image_size, image_size)),  # 동적으로 이미지 크기 설정
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         default_transform_test = transforms.Compose([
+            transforms.Resize((image_size, image_size)),  # 동적으로 이미지 크기 설정
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
-        print(f'the dataset is {dataset}')
+        print(f'the dataset is {dataset} with image size {image_size}x{image_size}')
 
     else:
         raise NotImplementedError

@@ -59,6 +59,7 @@ if __name__ == '__main__':
     parser.add_argument('--poster_height', type=int, default=210, help='number of classes in the poster in the Y axis')
     parser.add_argument('--patch_num_x', type=int, default=16, help='number of patches in x direction')
     parser.add_argument('--patch_num_y', type=int, default=6, help='number of patches in y direction')
+    parser.add_argument('--image_size', type=int, default=128, help='image size for resizing (e.g., 128, 224, 256)')
 
     args = parser.parse_args()
 
