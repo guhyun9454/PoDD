@@ -10,7 +10,9 @@ from typing import List
 from torch.nn import CosineSimilarity
 from transformers import CLIPTokenizer, CLIPTextModel
 
-from src.data_utils import CIFAR10_LABELS_DICT, CIFAR100_LABELS_DICT, TINY_IMAGENET_200_LABELS_DICT, CUB200_LABELS_DICT
+from src.data_utils import (CIFAR10_LABELS_DICT, CIFAR100_LABELS_DICT, TINY_IMAGENET_200_LABELS_DICT, CUB200_LABELS_DICT,
+                             IMAGENET_NETTE_LABELS_DICT, IMAGENET_WOOF_LABELS_DICT, IMAGENET_CATS_LABELS_DICT,
+                             IMAGENET_FRUITS_LABELS_DICT, IMAGENET_BIRDS_LABELS_DICT, IMAGENET_YELLOW_LABELS_DICT)
 
 
 class PoCO:
@@ -69,6 +71,18 @@ class PoCO:
             class_dict = CUB200_LABELS_DICT
         elif dataset == 'tiny-imagenet-200':
             class_dict = TINY_IMAGENET_200_LABELS_DICT
+        elif dataset == 'imagenet-nette':
+            class_dict = IMAGENET_NETTE_LABELS_DICT
+        elif dataset == 'imagenet-woof':
+            class_dict = IMAGENET_WOOF_LABELS_DICT
+        elif dataset == 'imagenet-cats':
+            class_dict = IMAGENET_CATS_LABELS_DICT
+        elif dataset == 'imagenet-fruits':
+            class_dict = IMAGENET_FRUITS_LABELS_DICT
+        elif dataset == 'imagenet-birds':
+            class_dict = IMAGENET_BIRDS_LABELS_DICT
+        elif dataset == 'imagenet-yellow':
+            class_dict = IMAGENET_YELLOW_LABELS_DICT
         else:
             raise ValueError(f'unknown dataset: {dataset},'
                              f' in order to run you need to add the labels mapping to the dataset_utils.py file')
