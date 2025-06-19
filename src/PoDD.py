@@ -55,7 +55,9 @@ class PoDD(nn.Module):
         return imgs, labels
 
     def forward(self, x):
-        self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).cuda()
+        # Use the same device as the input tensor for DataParallel compatibility
+        device = x.device
+        self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).to(device)
         self.net.train()
 
         if self.inner_optim == 'SGD':
@@ -108,7 +110,9 @@ class PoDD(nn.Module):
 
     def init_train(self, epoch, init=False):
         if init:
-            self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).cuda()
+            # Use the same device as the distilled data for DataParallel compatibility
+            device = self.data.device
+            self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).to(device)
             if self.inner_optim == 'SGD':
                 self.optimizer = optim.SGD(self.net.parameters(), lr=self.lr, momentum=0.9, weight_decay=5e-4)
                 self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[600],
