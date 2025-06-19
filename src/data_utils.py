@@ -18,7 +18,13 @@ from src.convnet import ConvNet, ConvNet2
 
 # change paths as needed:
 DATA_PATHS = {'tiny-imagenet-200': '../datasets/tiny-imagenet-200/tiny-imagenet-200',
-              'cub-200': '../datasets/CUB200'}
+              'cub-200': '../datasets/CUB200',
+              'imagenet-nette': '/local_datasets/ImageNet_nette',
+              'imagenet-woof': '/local_datasets/ImageNet_woof',
+              'imagenet-fruits': '/local_datasets/ImageNet_fruits',
+              'imagenet-yellow': '/local_datasets/ImageNet_yellow',
+              'imagenet-cats': '/local_datasets/ImageNet_cats',
+              'imagenet-birds': '/local_datasets/ImageNet_birds'}
 
 
 # functions:
@@ -42,6 +48,9 @@ def get_arch(arch, num_classes, channel, im_size):
     if arch == 'convnetw2':
         net_width, net_depth, net_act, net_norm, net_pooling = 128, 3, 'relu', 'batchnorm', 'avgpooling'
         return ConvNet2(channel, num_classes, net_width, net_depth, net_act, net_norm, net_pooling, im_size=im_size)
+    if arch == 'convnet5':
+        net_width, net_depth, net_act, net_norm, net_pooling = 128, 5, 'relu', 'instancenorm', 'avgpooling'
+        return ConvNet(channel, num_classes, net_width, net_depth, net_act, net_norm, net_pooling, im_size=im_size)
 
     raise NotImplementedError
 
@@ -124,6 +133,38 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
 
         trainset_test = trainset
 
+    elif dataset in ['imagenet-nette', 'imagenet-woof', 'imagenet-cats', 
+                     'imagenet-fruits', 'imagenet-birds', 'imagenet-yellow']:
+        num_classes = 10
+        shape = [3, 224, 224]  # ImageNet 표준 크기
+        
+        root = DATA_PATHS[dataset]
+        train_dir = os.path.join(root, 'train')
+        val_dir = os.path.join(root, 'val')
+        
+        if zca:
+            train_image_folder_set = ImageFolder(train_dir, transform=transforms.ToTensor())
+            test_image_folder_set = ImageFolder(val_dir, transform=transforms.ToTensor())
+            
+            # 이미지들을 메모리에 로드
+            train_data = [(img, target) for img, target in tqdm(DataLoader(train_image_folder_set, batch_size=256))]
+            trainset = TensorDataset(torch.vstack([img for img, _ in train_data]).squeeze(),
+                                     torch.hstack([target for _, target in train_data]).squeeze().long())
+            
+            test_data = [(img, target) for img, target in tqdm(DataLoader(test_image_folder_set, batch_size=256))]
+            testset = TensorDataset(torch.vstack([img for img, _ in test_data]).squeeze(),
+                                    torch.hstack([target for _, target in test_data]).squeeze().long())
+            
+            # ZCA whitening 적용
+            trainset.data_tensor, testset.data_tensor, process_config = \
+                preprocess(trainset.data_tensor, testset.data_tensor, regularization=0.1, permute=False)
+            
+            trainset_test = trainset
+        else:
+            trainset = ImageFolder(train_dir, transform=transform_train)
+            trainset_test = ImageFolder(train_dir, transform=transform_test)
+            testset = ImageFolder(val_dir, transform=transform_test)
+
     else:
         raise NotImplementedError
 
@@ -176,6 +217,19 @@ def get_transform(dataset):
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         print('the dataset is cub-200-2011')
+
+    elif dataset in ['imagenet-nette', 'imagenet-woof', 'imagenet-cats', 
+                     'imagenet-fruits', 'imagenet-birds', 'imagenet-yellow']:
+        # ImageNet 표준 정규화 사용
+        default_transform_train = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
+        default_transform_test = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
+        print(f'the dataset is {dataset}')
 
     else:
         raise NotImplementedError
@@ -715,6 +769,43 @@ CUB200_LABELS_DICT = {'Black_footed_Albatross': 1, 'Laysan_Albatross': 2, 'Sooty
                       'Common_Yellowthroat': 200}
 CUB200_LABELS_DICT = {k: v - 1 for k, v in CUB200_LABELS_DICT.items()}
 
+# ImageNet Subset Label Dictionaries
+IMAGENET_NETTE_LABELS_DICT = {
+    'tench': 0, 'English_springer': 1, 'cassette_player': 2, 'chain_mail': 3,
+    'church': 4, 'French_horn': 5, 'fur_coat': 6, 'gasmask': 7,
+    'golf_ball': 8, 'parachute': 9
+}
+
+IMAGENET_WOOF_LABELS_DICT = {
+    'Australian_terrier': 0, 'Border_terrier': 1, 'Samoyed': 2, 'beagle': 3,
+    'Shih-Tzu': 4, 'English_foxhound': 5, 'Afghan_hound': 6, 'dingo': 7,
+    'golden_retriever': 8, 'Old_English_sheepdog': 9
+}
+
+IMAGENET_CATS_LABELS_DICT = {
+    'tabby': 0, 'tiger_cat': 1, 'Persian_cat': 2, 'Siamese_cat': 3,
+    'Egyptian_cat': 4, 'lion': 5, 'tiger': 6, 'cheetah': 7,
+    'lynx': 8, 'cougar': 9
+}
+
+IMAGENET_FRUITS_LABELS_DICT = {
+    'pineapple': 0, 'orange': 1, 'strawberry': 2, 'lemon': 3,
+    'fig': 4, 'pomegranate': 5, 'banana': 6, 'bell_pepper': 7,
+    'cucumber': 8, 'Granny_Smith': 9
+}
+
+IMAGENET_BIRDS_LABELS_DICT = {
+    'black_grouse': 0, 'flamingo': 1, 'partridge': 2, 'pelican': 3,
+    'king_penguin': 4, 'bald_eagle': 5, 'quail': 6, 'ostrich': 7,
+    'black_swan': 8, 'peacock': 9
+}
+
+IMAGENET_YELLOW_LABELS_DICT = {
+    'bee': 0, 'corn': 1, 'orange': 2, 'lemon': 3,
+    'acorn': 4, 'school_bus': 5, 'honeycomb': 6, 'lion': 7,
+    'goldfinch': 8, 'goldfish': 9
+}
+
 TINY_IMAGENET_200_LABELS_DICT = {'goldfish': 0, 'European_fire_salamander': 1, 'bullfrog': 2, 'tailed_frog': 3,
                                  'American_alligator': 4, 'boa_constrictor': 5, 'trilobite': 6, 'scorpion': 7,
                                  'black_widow': 8, 'tarantula': 9, 'centipede': 10, 'goose': 11, 'koala': 12,
@@ -761,6 +852,53 @@ TINY_IMAGENET_200_LABELS_DICT = {'goldfish': 0, 'European_fire_salamander': 1, '
                                  'pizza': 191, 'potpie': 192, 'espresso': 193, 'alp': 194, 'cliff': 195,
                                  'coral_reef': 196, 'lakeside': 197, 'seashore': 198, 'acorn': 199
                                  }
+
+# ImageNet subset 설정
+class ImageNetSubsetConfig:
+    """ImageNet subset 정의"""
+    # ImageNette: 다양한 일반적인 객체 10개
+    imagenette = [0, 217, 482, 491, 497, 566, 569, 571, 574, 701]
+    
+    # ImageWoof: 개 품종 10개
+    imagewoof = [193, 182, 258, 162, 155, 167, 159, 273, 207, 229]
+    
+    # 고양이 종류 10개
+    cats = [281, 282, 283, 284, 285, 291, 292, 290, 289, 287]
+    
+    # 과일 10개
+    fruits = [953, 954, 949, 950, 951, 957, 952, 945, 943, 948]
+    
+    # 새 종류 10개
+    birds = [84, 130, 88, 144, 145, 22, 96, 9, 100, 89]
+    
+    # 노란색 물체 10개
+    yellow = [309, 986, 954, 951, 987, 779, 599, 291, 72, 11]
+    
+    # subset 이름과 클래스 매핑
+    subsets = {
+        "nette": imagenette,
+        "woof": imagewoof,
+        "cats": cats,
+        "fruits": fruits,
+        "birds": birds,
+        "yellow": yellow
+    }
+    
+    # ImageNet 클래스 인덱스에서 이름으로 매핑 (일부만)
+    idx_to_name = {
+        0: "tench", 217: "English_springer", 482: "cassette_player", 491: "chain_mail", 
+        497: "church", 566: "French_horn", 569: "fur_coat", 571: "gasmask", 574: "golf_ball", 701: "parachute",
+        193: "Australian_terrier", 182: "Border_terrier", 258: "Samoyed", 162: "beagle", 
+        155: "Shih-Tzu", 167: "English_foxhound", 159: "Afghan_hound", 273: "dingo", 207: "golden_retriever", 229: "Old_English_sheepdog",
+        281: "tabby", 282: "tiger_cat", 283: "Persian_cat", 284: "Siamese_cat", 285: "Egyptian_cat",
+        291: "lion", 292: "tiger", 290: "cheetah", 289: "lynx", 287: "cougar",
+        953: "pineapple", 954: "orange", 949: "strawberry", 950: "lemon", 951: "fig", 
+        957: "pomegranate", 952: "banana", 945: "bell_pepper", 943: "cucumber", 948: "Granny_Smith",
+        84: "black_grouse", 130: "flamingo", 88: "partridge", 144: "pelican", 145: "king_penguin",
+        22: "bald_eagle", 96: "quail", 9: "ostrich", 100: "black_swan", 89: "peacock",
+        309: "bee", 986: "corn", 779: "school_bus", 599: "honeycomb", 291: "lion",
+        72: "goldfinch", 11: "goldfish", 987: "acorn"
+    }
 
 IMAGE_NET_MAPPING = {
     'n02119789': "kit_fox",
