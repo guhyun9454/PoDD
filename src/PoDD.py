@@ -44,7 +44,7 @@ class PoDD(nn.Module):
         self.lr = lr if not train_lr else torch.nn.Parameter(lr)
         self.net = get_arch(arch, self.num_classes, self.channel, self.im_size)
 
-    def get_overlapping_patches_and_labels(self):
+    def get_overlapping_patches_and_labels(self, device=None):
         perm = torch.randperm(self.samples_num, device='cpu')
         indices = perm[:self.distill_batch_size].sort()[0]
         imgs = self.get_crops(self.data, indices)
@@ -52,6 +52,12 @@ class PoDD(nn.Module):
             labels = self.get_labels(self.label, indices)
         else:
             labels = self.label[indices]
+        
+        # Ensure imgs and labels are on the correct device
+        if device is not None:
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+        
         return imgs, labels
 
     def forward(self, x):
@@ -77,7 +83,7 @@ class PoDD(nn.Module):
         if self.dd_type == 'curriculum':
             for i in range(self.curriculum):
                 self.optimizer.zero_grad()
-                imgs, label = self.get_overlapping_patches_and_labels()
+                imgs, label = self.get_overlapping_patches_and_labels(device=device)
                 imgs = self.syn_intervention(imgs, dtype='syn')
 
                 out, pres = self.net(imgs)
@@ -91,7 +97,7 @@ class PoDD(nn.Module):
         loss_coef = 1
         with higher.innerloop_ctx(self.net, self.optimizer, copy_initial_weights=True) as (fnet, diffopt):
             for i in range(self.window):
-                imgs, label = self.get_overlapping_patches_and_labels()
+                imgs, label = self.get_overlapping_patches_and_labels(device=device)
                 imgs = self.syn_intervention(imgs, dtype='syn')
 
                 if i + self.curriculum == 150 or i + self.curriculum == 240:
@@ -110,8 +116,8 @@ class PoDD(nn.Module):
 
     def init_train(self, epoch, init=False):
         if init:
-            # Use the same device as the distilled data for DataParallel compatibility
-            device = self.data.device
+            # Use cuda:0 as default device when not in forward pass
+            device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
             self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).to(device)
             if self.inner_optim == 'SGD':
                 self.optimizer = optim.SGD(self.net.parameters(), lr=self.lr, momentum=0.9, weight_decay=5e-4)
@@ -122,7 +128,7 @@ class PoDD(nn.Module):
 
         for i in range(epoch):
             self.optimizer.zero_grad()
-            imgs, label = self.get_overlapping_patches_and_labels()
+            imgs, label = self.get_overlapping_patches_and_labels(device=self.net.parameters().__next__().device)
             imgs = self.syn_intervention(imgs, dtype='syn')
             out, pres = self.net(imgs)
             loss = self.criterion(out, label)
