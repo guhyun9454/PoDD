@@ -10,7 +10,13 @@ from typing import List
 from torch.nn import CosineSimilarity
 from transformers import CLIPTokenizer, CLIPTextModel
 
-from src.data_utils import CIFAR10_LABELS_DICT, CIFAR100_LABELS_DICT, TINY_IMAGENET_200_LABELS_DICT, CUB200_LABELS_DICT
+from src.data_utils import (
+    CIFAR10_LABELS_DICT,
+    CIFAR100_LABELS_DICT,
+    TINY_IMAGENET_200_LABELS_DICT,
+    CUB200_LABELS_DICT,
+    IMAGENET_SUBSET_10_LABELS_DICT,
+)
 
 
 class PoCO:
@@ -69,6 +75,10 @@ class PoCO:
             class_dict = CUB200_LABELS_DICT
         elif dataset == 'tiny-imagenet-200':
             class_dict = TINY_IMAGENET_200_LABELS_DICT
+        elif dataset.startswith('imagenet-subset'):
+            # dynamic dict generated at runtime in data_utils
+            from src.data_utils import IMAGENET_SUBSET_DYNAMIC_LABELS_DICT as _dyn_dict
+            class_dict = _dyn_dict if _dyn_dict else IMAGENET_SUBSET_10_LABELS_DICT
         else:
             raise ValueError(f'unknown dataset: {dataset},'
                              f' in order to run you need to add the labels mapping to the dataset_utils.py file')

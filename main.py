@@ -60,6 +60,20 @@ if __name__ == '__main__':
     parser.add_argument('--patch_num_x', type=int, default=16, help='number of patches in x direction')
     parser.add_argument('--patch_num_y', type=int, default=6, help='number of patches in y direction')
 
+    # ImageNet subset specific args
+    parser.add_argument('--imagenet_subset', action='store_true',
+                        help='use the 10-class ImageNet subset dataset (overrides --dataset)')
+    parser.add_argument('--imagenet_subset_res', type=int, default=128,
+                        help='resolution (height=width) to which ImageNet images are resized/cropped')
+    parser.add_argument('--imagenet_subset_key', type=str, default='custom',
+                        help='subset name in {nette, woof, fruits, yellow, cats, birds, geo, food, mammals, marine, a, b, c, d, e}')
+
     args = parser.parse_args()
+
+    # override dataset if imagenet_subset flag provided
+    if args.imagenet_subset:
+        args.dataset = f'imagenet-subset-{args.imagenet_subset_key}'
+        # pass resolution to downstream modules via args
+        args.res = args.imagenet_subset_res
 
     main_worker(args)

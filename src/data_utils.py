@@ -124,6 +124,103 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
 
         trainset_test = trainset
 
+    # -------------------------------------------------------------
+    # ImageNet 10‐class subset (a.k.a ImageNet-subset) integration
+    # -------------------------------------------------------------
+    elif dataset.startswith('imagenet-subset'):
+        """ImageNet subset with 10 classes, resolution 128×128.
+
+        We follow the same class id selection used in imagenet_subset/utils.py::Config.custom
+        ( [1, 199, 388, 294, 340, 932, 327, 765, 928, 486] ).
+        These ids correspond to the following class names (synset human readable form):
+            ['australian_terrier', 'border_terrier', 'samoyed', 'beagle', 'shih-tzu',
+             'english_foxhound', 'rhodesian_ridgeback', 'dingo', 'golden_retriever',
+             'english_sheepdog']  # taken from the original repository comments.
+        """
+
+        # basic dataset stats
+        num_classes = 10
+        shape = [3, 128, 128]
+
+        # default transforms if not provided (we sometimes call get_transform separately)
+        if transform_train is None or transform_test is None:
+            mean = (0.485, 0.456, 0.406)
+            std = (0.229, 0.224, 0.225)
+            transform_train = transforms.Compose([
+                transforms.Resize(shape[1:]),
+                transforms.CenterCrop(shape[1:]),
+                transforms.ToTensor(),
+                transforms.Normalize(mean, std),
+            ])
+            transform_test = transforms.Compose([
+                transforms.Resize(shape[1:]),
+                transforms.CenterCrop(shape[1:]),
+                transforms.ToTensor(),
+                transforms.Normalize(mean, std),
+            ])
+
+        # ImageNet split folders should be located under `root/train` and `root/val` following torchvision convention
+        # NOTE: torchvision.datasets.ImageNet expects the full 1000‐class folder structure. We therefore
+        #       filter the dataset after loading so users do not need to copy files.
+        from torchvision.datasets import ImageNet  # local import to avoid heavy dependency at startup
+
+        # determine subset key (e.g., 'nette', 'fruits'). expected pattern 'imagenet-subset-<key>'.
+        subset_key = 'custom'
+        parts = dataset.split('-')
+        if len(parts) >= 3:
+            subset_key = parts[2]
+
+        try:
+            from imagenet_subset.utils import Config as _ImgSubsetCfg
+            subset_ids = _ImgSubsetCfg.dict.get(subset_key, _ImgSubsetCfg.custom)
+        except Exception:
+            # fallback to default custom list if utils cannot be imported
+            subset_ids = [1, 199, 388, 294, 340, 932, 327, 765, 928, 486]
+
+        # build label name mapping (human-readable if possible)
+        label_dict_tmp = {}
+        try:
+            # access synset list from torchvision metadata
+            from torchvision.datasets.imagenet import parse_meta
+            meta = parse_meta(root)
+            idx_to_synset = {v['target']: v['synset'].split(" ")[0] for v in meta['categories']}
+            for new_idx, orig_idx in enumerate(subset_ids):
+                synset = idx_to_synset.get(orig_idx, f'class_{orig_idx}')
+                name = IMAGE_NET_MAPPING.get(synset, synset)  # map to readable name if available
+                label_dict_tmp[name] = new_idx
+        except Exception:
+            label_dict_tmp = {f'class_{orig}': i for i, orig in enumerate(subset_ids)}
+
+        global IMAGENET_SUBSET_DYNAMIC_LABELS_DICT
+        IMAGENET_SUBSET_DYNAMIC_LABELS_DICT = label_dict_tmp
+
+        # helper to load and filter a split
+        def _load_split(split):
+            full_ds = ImageNet(root, split=split, transform=transform_train if split == 'train' else transform_test)
+            # indices where label is in subset_ids
+            subset_indices = [i for i, t in enumerate(full_ds.targets) if t in subset_ids]
+            ds = torch.utils.data.Subset(full_ds, subset_indices)
+            # remap labels in underlying dataset so that targets become 0‒9 consecutively.
+            id2new = {orig: new for new, orig in enumerate(subset_ids)}
+            for orig_id, new_id in id2new.items():
+                # both train & val share same underlying dataset object type
+                full_ds.targets = np.array(full_ds.targets)
+                full_ds.targets[full_ds.targets == orig_id] = new_id
+            return ds
+
+        trainset = _load_split('train')
+        trainset_test = trainset  # identical transform but without augmentation by default
+        testset = _load_split('val')
+
+        # No ZCA whitening supported for ImageNet subset at the moment.
+        if zca:
+            raise NotImplementedError('ZCA whitening not supported for imagenet-subset')
+
+        process_config = None
+
+    # -------------------------------------------------------------
+    # End of ImageNet subset block
+    # -------------------------------------------------------------
     else:
         raise NotImplementedError
 
@@ -176,6 +273,16 @@ def get_transform(dataset):
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         print('the dataset is cub-200-2011')
+
+    elif dataset.startswith('imagenet-subset'):
+        default_transform_train = transforms.Compose([
+            transforms.Resize((128, 128)),
+            transforms.CenterCrop((128, 128)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
+        default_transform_test = default_transform_train
+        print('the dataset is imagenet-subset (10 classes)')
 
     else:
         raise NotImplementedError
@@ -1763,4 +1870,18 @@ IMAGE_NET_MAPPING = {
     'n04325704': "stole",
     'n07831146': "carbonara",
     'n03255030': "dumbbell"
+}
+
+# Add label dictionary for the ImageNet 10-class subset (matching order above)
+IMAGENET_SUBSET_10_LABELS_DICT = {
+    'australian_terrier': 0,
+    'border_terrier': 1,
+    'samoyed': 2,
+    'beagle': 3,
+    'shih-tzu': 4,
+    'english_foxhound': 5,
+    'rhodesian_ridgeback': 6,
+    'dingo': 7,
+    'golden_retriever': 8,
+    'english_sheepdog': 9,
 }
