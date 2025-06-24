@@ -170,12 +170,13 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
         if len(parts) >= 3:
             subset_key = parts[2]
 
+        print(f"Using ImageNet subset '{subset_key}' from path: {root}")
+
         try:
             from imagenet_subset.utils import Config as _ImgSubsetCfg
             subset_ids = _ImgSubsetCfg.dict.get(subset_key, _ImgSubsetCfg.custom)
         except Exception:
-            # fallback to default custom list if utils cannot be imported
-            subset_ids = [1, 199, 388, 294, 340, 932, 327, 765, 928, 486]
+            raise ValueError(f"Unknown subset key '{subset_key}'")
 
         # build label name mapping (human-readable if possible)
         label_dict_tmp = {}

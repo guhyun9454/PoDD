@@ -55,9 +55,15 @@ def main_worker(args):
 
     cudnn.benchmark = True
     cudnn.deterministic = True
-    args.data_root = os.path.join(args.root, args.dataset)
+    
+    # For ImageNet subset, use the root path directly instead of appending dataset name
+    if args.dataset.startswith('imagenet-subset'):
+        args.data_root = args.root
+    else:
+        args.data_root = os.path.join(args.root, args.dataset)
+        
     print("Dataset: %s" % args.dataset)
-    print("Dataset Path: %s" % args.root)
+    print("Dataset Path: %s" % args.data_root)
     print(args)
 
     # 0. Preprocess datasets
