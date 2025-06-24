@@ -42,6 +42,9 @@ def get_arch(arch, num_classes, channel, im_size):
     if arch == 'convnetw2':
         net_width, net_depth, net_act, net_norm, net_pooling = 128, 3, 'relu', 'batchnorm', 'avgpooling'
         return ConvNet2(channel, num_classes, net_width, net_depth, net_act, net_norm, net_pooling, im_size=im_size)
+    if arch == 'convnet5':
+        net_width, net_depth, net_act, net_norm, net_pooling = 128, 5, 'relu', 'instancenorm', 'avgpooling'
+        return ConvNet(channel, num_classes, net_width, net_depth, net_act, net_norm, net_pooling, im_size=im_size)
 
     raise NotImplementedError
 
