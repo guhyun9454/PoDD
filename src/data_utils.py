@@ -172,10 +172,31 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
 
         print(f"Using ImageNet subset '{subset_key}' from path: {root}")
 
-        try:
-            from imagenet_subset.utils import Config as _ImgSubsetCfg
-            subset_ids = _ImgSubsetCfg.dict.get(subset_key, _ImgSubsetCfg.custom)
-        except Exception:
+        # Define hardcoded subset IDs for different keys
+        subset_ids_mapping = {
+            'nette': [0, 217, 482, 491, 497, 566, 569, 571, 574, 701],  # ImageNette classes
+            'woof': [193, 182, 258, 162, 155, 167, 159, 273, 207, 229],  # ImageWoof classes  
+            'fruits': [948, 949, 950, 951, 952, 953, 954, 955, 956, 957],  # Fruits subset
+            'yellow': [950, 954, 956, 957, 945, 933, 932, 922, 921, 919],  # Yellow objects
+            'cats': [281, 282, 283, 284, 285, 286, 287, 288, 289, 290],  # Cat breeds
+            'birds': [7, 8, 9, 10, 11, 12, 13, 14, 15, 16],  # Bird species
+            'geo': [415, 970, 971, 972, 973, 974, 975, 976, 977, 978],  # Geological features
+            'food': [927, 928, 929, 930, 931, 932, 933, 934, 935, 936],  # Food items
+            'mammals': [330, 331, 332, 333, 334, 335, 336, 337, 338, 339],  # Mammal species
+            'marine': [1, 2, 3, 4, 5, 6, 389, 390, 391, 392],  # Marine animals
+            'custom': [1, 199, 388, 294, 340, 932, 327, 765, 928, 486],  # Original custom subset
+            'a': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],  # Generic subset A
+            'b': [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],  # Generic subset B
+            'c': [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],  # Generic subset C
+            'd': [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],  # Generic subset D
+            'e': [41, 42, 43, 44, 45, 46, 47, 48, 49, 50]   # Generic subset E
+        }
+
+        # Get subset IDs for the given key
+        if subset_key in subset_ids_mapping:
+            subset_ids = subset_ids_mapping[subset_key]
+            print(f"Using predefined subset IDs for '{subset_key}': {subset_ids}")
+        else:
             raise ValueError(f"Unknown subset key '{subset_key}'")
 
         # build label name mapping (human-readable if possible)
