@@ -68,14 +68,17 @@ def main_worker(args):
 
     # 0. Preprocess datasets
     print('==> Preparing data..')
-    transform_train, transform_test = get_transform(args.dataset)
+    # Pass resolution for ImageNet subset
+    resolution = getattr(args, 'res', None)
+    transform_train, transform_test = get_transform(args.dataset, resolution=resolution)
 
     print(transform_train, transform_test)
     train1, train2, testset, num_classes, shape, process_config = get_dataset(args.dataset,
                                                                               args.data_root,
                                                                               transform_train,
                                                                               transform_test,
-                                                                              zca=args.zca)
+                                                                              zca=args.zca,
+                                                                              resolution=resolution)
 
     zca_inverse = None
     if args.zca and process_config is not None:

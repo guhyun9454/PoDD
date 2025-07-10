@@ -49,7 +49,7 @@ def get_arch(arch, num_classes, channel, im_size):
     raise NotImplementedError
 
 
-def get_dataset(dataset, root, transform_train, transform_test, zca=False):
+def get_dataset(dataset, root, transform_train, transform_test, zca=False, resolution=None):
     """ Returns the dataset, the number of classes, and the shape of the images """
     process_config = None
 
@@ -131,7 +131,7 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
     # ImageNet 10‐class subset (a.k.a ImageNet-subset) integration
     # -------------------------------------------------------------
     elif dataset.startswith('imagenet-subset'):
-        """ImageNet subset with 10 classes, resolution 128×128.
+        """ImageNet subset with 10 classes, configurable resolution.
 
         We follow the same class id selection used in imagenet_subset/utils.py::Config.custom
         ( [1, 199, 388, 294, 340, 932, 327, 765, 928, 486] ).
@@ -143,21 +143,23 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
 
         # basic dataset stats
         num_classes = 10
-        shape = [3, 128, 128]
+        # Use resolution from parameter if available, otherwise default to 128
+        img_resolution = resolution if resolution is not None else 128
+        shape = [3, img_resolution, img_resolution]
 
         # default transforms if not provided (we sometimes call get_transform separately)
         if transform_train is None or transform_test is None:
             mean = (0.485, 0.456, 0.406)
             std = (0.229, 0.224, 0.225)
             transform_train = transforms.Compose([
-                transforms.Resize(shape[1:]),
-                transforms.CenterCrop(shape[1:]),
+                transforms.Resize((img_resolution, img_resolution)),
+                transforms.CenterCrop((img_resolution, img_resolution)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),
             ])
             transform_test = transforms.Compose([
-                transforms.Resize(shape[1:]),
-                transforms.CenterCrop(shape[1:]),
+                transforms.Resize((img_resolution, img_resolution)),
+                transforms.CenterCrop((img_resolution, img_resolution)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean, std),
             ])
@@ -225,12 +227,25 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
             # indices where label is in subset_ids
             subset_indices = [i for i, t in enumerate(full_ds.targets) if t in subset_ids]
             ds = torch.utils.data.Subset(full_ds, subset_indices)
+            
             # remap labels in underlying dataset so that targets become 0‒9 consecutively.
+            # Use a safe two-step mapping to avoid conflicts
             id2new = {orig: new for new, orig in enumerate(subset_ids)}
+            
+            # Convert to numpy array first
+            full_ds.targets = np.array(full_ds.targets)
+            
+            # Step 1: Map original IDs to temporary high values to avoid conflicts
+            temp_offset = 10000  # Use high values to avoid conflicts
             for orig_id, new_id in id2new.items():
-                # both train & val share same underlying dataset object type
-                full_ds.targets = np.array(full_ds.targets)
-                full_ds.targets[full_ds.targets == orig_id] = new_id
+                mask = (full_ds.targets == orig_id)
+                full_ds.targets[mask] = temp_offset + new_id
+            
+            # Step 2: Map temporary values back to final 0-9 range
+            for orig_id, new_id in id2new.items():
+                mask = (full_ds.targets == temp_offset + new_id)
+                full_ds.targets[mask] = new_id
+            
             return ds
 
         trainset = _load_split('train')
@@ -252,7 +267,7 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False):
     return trainset, trainset_test, testset, num_classes, shape, process_config
 
 
-def get_transform(dataset):
+def get_transform(dataset, resolution=None):
     """ Returns the default transformation for the given dataset """
     print(dataset)
     if dataset == 'cifar10':
@@ -300,14 +315,15 @@ def get_transform(dataset):
         print('the dataset is cub-200-2011')
 
     elif dataset.startswith('imagenet-subset'):
+        img_resolution = resolution if resolution is not None else 128
         default_transform_train = transforms.Compose([
-            transforms.Resize((128, 128)),
-            transforms.CenterCrop((128, 128)),
+            transforms.Resize((img_resolution, img_resolution)),
+            transforms.CenterCrop((img_resolution, img_resolution)),
             transforms.ToTensor(),
             transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
         default_transform_test = default_transform_train
-        print('the dataset is imagenet-subset (10 classes)')
+        print(f'the dataset is imagenet-subset (10 classes) with resolution {img_resolution}x{img_resolution}')
 
     else:
         raise NotImplementedError
