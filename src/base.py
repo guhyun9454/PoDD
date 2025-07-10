@@ -357,8 +357,20 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
         i, (inputs, targets) = train1
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
+        
+        # Debug: Check target values
+        if i == 0:  # Only print for first batch
+            print(f"Debug: Batch {i} - targets shape: {targets.shape}, values: {targets}")
+            print(f"Debug: Min target: {targets.min()}, Max target: {targets.max()}")
+            if targets.min() < 0 or targets.max() >= model.module.num_classes:
+                print(f"ERROR: Target values out of range! Expected [0, {model.module.num_classes})")
 
         output, _ = model(inputs)
+        
+        # Debug: Check output shape
+        if i == 0:  # Only print for first batch
+            print(f"Debug: Output shape: {output.shape}, Expected: (batch_size, {model.module.num_classes})")
+            
         loss = criterion(output, targets)
 
         # measure accuracy and record loss

@@ -21,6 +21,27 @@ DATA_PATHS = {'tiny-imagenet-200': '../datasets/tiny-imagenet-200/tiny-imagenet-
               'cub-200': '../datasets/CUB200'}
 
 
+# Custom wrapper for ImageNet subset to handle label remapping
+class ImageNetSubsetWrapper(torch.utils.data.Dataset):
+    """Wrapper to remap ImageNet labels to 0-9 for subset"""
+    def __init__(self, dataset, subset_ids):
+        self.dataset = dataset
+        self.subset_ids = subset_ids
+        # Create mapping from original ImageNet IDs to 0-9
+        self.id_to_new = {orig: new for new, orig in enumerate(subset_ids)}
+        
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        img, target = self.dataset[idx]
+        # Remap target to 0-9 range
+        new_target = self.id_to_new.get(target, -1)  # -1 for safety, should not happen
+        if new_target == -1:
+            raise ValueError(f"Target {target} not in subset_ids {self.subset_ids}")
+        return img, new_target
+
+
 # functions:
 def get_arch(arch, num_classes, channel, im_size):
     """ Returns a network for the given architecture """
@@ -226,31 +247,23 @@ def get_dataset(dataset, root, transform_train, transform_test, zca=False, resol
             full_ds = ImageNet(root, split=split, transform=transform_train if split == 'train' else transform_test)
             # indices where label is in subset_ids
             subset_indices = [i for i, t in enumerate(full_ds.targets) if t in subset_ids]
-            ds = torch.utils.data.Subset(full_ds, subset_indices)
-            
-            # remap labels in underlying dataset so that targets become 0‒9 consecutively.
-            # Use a safe two-step mapping to avoid conflicts
-            id2new = {orig: new for new, orig in enumerate(subset_ids)}
-            
-            # Convert to numpy array first
-            full_ds.targets = np.array(full_ds.targets)
-            
-            # Step 1: Map original IDs to temporary high values to avoid conflicts
-            temp_offset = 10000  # Use high values to avoid conflicts
-            for orig_id, new_id in id2new.items():
-                mask = (full_ds.targets == orig_id)
-                full_ds.targets[mask] = temp_offset + new_id
-            
-            # Step 2: Map temporary values back to final 0-9 range
-            for orig_id, new_id in id2new.items():
-                mask = (full_ds.targets == temp_offset + new_id)
-                full_ds.targets[mask] = new_id
-            
-            return ds
+            # Create subset with only the indices we want
+            subset_ds = torch.utils.data.Subset(full_ds, subset_indices)
+            # Wrap with our custom wrapper to handle label remapping
+            wrapped_ds = ImageNetSubsetWrapper(subset_ds, subset_ids)
+            return wrapped_ds
 
         trainset = _load_split('train')
         trainset_test = trainset  # identical transform but without augmentation by default
         testset = _load_split('val')
+        
+        # Debug: Check first few labels to ensure they are in 0-9 range
+        print(f"Debug: Checking first 10 labels from trainset...")
+        for i in range(min(10, len(trainset))):
+            _, label = trainset[i]
+            print(f"  Sample {i}: label = {label}")
+            if label < 0 or label >= num_classes:
+                raise ValueError(f"Label {label} is out of range [0, {num_classes})")
 
         # No ZCA whitening supported for ImageNet subset at the moment.
         if zca:
