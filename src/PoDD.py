@@ -45,36 +45,49 @@ class PoDD(nn.Module):
         self.net = get_arch(arch, self.num_classes, self.channel, self.im_size)
 
     def get_overlapping_patches_and_labels(self, device=None):
-        perm = torch.randperm(self.samples_num, device='cpu')
+        # Use more efficient random sampling
+        perm = torch.randperm(self.samples_num, device=device if device is not None else self.data.device)
         indices = perm[:self.distill_batch_size].sort()[0]
+        
+        # Get crops without unnecessary copying
         imgs = self.get_crops(self.data, indices)
+        
         if self.train_y:
             labels = self.get_labels(self.label, indices)
         else:
             labels = self.label[indices]
         
-        # Ensure imgs and labels are on the correct device
+        # Ensure imgs and labels are on the correct device with minimal copying
         if device is not None:
-            imgs = imgs.to(device)
-            labels = labels.to(device)
+            if imgs.device != device:
+                imgs = imgs.to(device, non_blocking=True)
+            if labels.device != device:
+                labels = labels.to(device, non_blocking=True)
         
         return imgs, labels
 
     def forward(self, x):
         # Use the same device as the input tensor for DataParallel compatibility
         device = x.device
-        self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).to(device)
+        
+        # Only create new network if it doesn't exist or device changed
+        if not hasattr(self, 'current_device') or self.current_device != device:
+            self.net = get_arch(self.arch, self.num_classes, self.channel, self.im_size).to(device)
+            self.current_device = device
+        
+        # Reset network to training mode
         self.net.train()
 
-        if self.inner_optim == 'SGD':
-            self.optimizer = optim.SGD(self.net.parameters(), lr=self.lr, momentum=0.9, weight_decay=5e-4)
-            self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[200],
-                                                            gamma=0.2) if self.decay else None
-        elif self.inner_optim == 'Adam':
-            self.optimizer = optim.Adam(self.net.parameters(), lr=self.lr)
-
-        else:
-            raise ValueError(f'inner_optim={self.inner_optim} is not supported')
+        # Only recreate optimizer if device changed
+        if not hasattr(self, 'optimizer') or self.current_device != device:
+            if self.inner_optim == 'SGD':
+                self.optimizer = optim.SGD(self.net.parameters(), lr=self.lr, momentum=0.9, weight_decay=5e-4)
+                self.scheduler = optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[200],
+                                                                gamma=0.2) if self.decay else None
+            elif self.inner_optim == 'Adam':
+                self.optimizer = optim.Adam(self.net.parameters(), lr=self.lr)
+            else:
+                raise ValueError(f'inner_optim={self.inner_optim} is not supported')
 
         if self.dd_type not in ['curriculum', 'standard']:
             print('The dataset distillation method is not implemented!')
@@ -95,7 +108,8 @@ class PoDD(nn.Module):
                     self.scheduler.step()
 
         loss_coef = 1
-        with higher.innerloop_ctx(self.net, self.optimizer, copy_initial_weights=True) as (fnet, diffopt):
+        with higher.innerloop_ctx(self.net, self.optimizer, copy_initial_weights=False, 
+                                 track_higher_grads=True) as (fnet, diffopt):
             for i in range(self.window):
                 imgs, label = self.get_overlapping_patches_and_labels(device=device)
                 imgs = self.syn_intervention(imgs, dtype='syn')
@@ -105,14 +119,27 @@ class PoDD(nn.Module):
                         loss_coef = loss_coef * 0.2
 
                 out, pres = fnet(imgs)
-                loss = self.criterion(out, label)
+                loss = self.criterion(out, label) * loss_coef
 
                 diffopt.step(loss)
                 if self.inner_optim == 'SGD' and self.scheduler is not None:
                     self.scheduler.step()
+                
+                # Clear intermediate variables to save memory
+                del imgs, label, out, pres, loss
+                
+                # Periodic memory cleanup during inner loop
+                if i % 5 == 0:
+                    torch.cuda.empty_cache()
 
             x = self.real_intervention(x, dtype='real')
-            return fnet(x)
+            result = fnet(x)
+            
+            # Clear context before returning
+            del fnet, diffopt
+            torch.cuda.empty_cache()
+            
+            return result
 
     def init_train(self, epoch, init=False):
         if init:

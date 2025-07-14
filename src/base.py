@@ -13,6 +13,7 @@ import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data.distributed
 import torch.backends.cudnn as cudnn
+from torch.cuda.amp import autocast, GradScaler
 
 from tqdm import tqdm
 from pathlib import Path
@@ -199,6 +200,9 @@ def main_worker(args):
     grad_acc = []
     best_loss_ind = 0
 
+    # Initialize GradScaler for mixed precision training
+    scaler = GradScaler() if args.use_mixed_precision else None
+
     distill_steps = 0
     if args.ddtype == 'curriculum' and args.cctype != 2:
         model.module.curriculum = [args.totwindow - args.window, args.minwindow, 0, 0][args.cctype]
@@ -220,7 +224,7 @@ def main_worker(args):
                 f"[DEBUG] Max={float(optimizer.param_groups[1]['params'][0].max().cpu())} Min={float(optimizer.param_groups[1]['params'][0].min().cpu())}")
 
         grad_tmp, losses_avg, distill_steps = train(train_loader1, None, model, criterion,
-                                                    optimizer, epoch, device, distill_steps, args)
+                                                    optimizer, epoch, device, distill_steps, args, scaler)
         grad_acc.append(grad_tmp)
         
         # Prevent memory accumulation by keeping only recent gradient history
@@ -266,34 +270,49 @@ def main_worker(args):
 
             if model.module.data.get_device() == 0 and args.wandb:
                 image_log_dict = {}
-                curr_distilled_data = model.module.data.clone().cpu().detach()
+                
+                # Use context manager for memory efficient data copying
+                with torch.no_grad():
+                    curr_distilled_data = model.module.data.clone().cpu().detach()
 
-                # inverse the zca one patch at a time, then combine the patches to a poster (for visualization)
-                if zca_inverse is not None:
-                    patches = get_crops_from_poster(curr_distilled_data, image_size_x, image_size_y,
-                                                    args.patch_num_x, args.patch_num_y)
-                    patches_shape = patches.shape
-                    patches = patches.reshape(args.patch_num_x,
-                                              args.patch_num_y,
-                                              *patches_shape[1:]).permute(1, 0, 3, 4, 2).reshape(-1, *patches_shape[1:])
+                    # inverse the zca one patch at a time, then combine the patches to a poster (for visualization)
+                    if zca_inverse is not None:
+                        patches = get_crops_from_poster(curr_distilled_data, image_size_x, image_size_y,
+                                                        args.patch_num_x, args.patch_num_y)
+                        patches_shape = patches.shape
+                        patches = patches.reshape(args.patch_num_x,
+                                                  args.patch_num_y,
+                                                  *patches_shape[1:]).permute(1, 0, 3, 4, 2).reshape(-1, *patches_shape[1:])
 
-                    patches = \
-                        np.ascontiguousarray(patches, dtype=np.float32).reshape(patches_shape[0], -1).astype('float32')
-                    patches = patches.dot(zca_inverse)
-                    patches = torch.Tensor(patches.reshape(patches_shape).astype('float32'))
-                    patches = patches.reshape(patches.shape[0], -1, 3)[:, :, [1, 2, 0]].permute(0, 2, 1).reshape(
-                        patches_shape)
-                    inverse_distilled = combine_images_with_fade(patches, args.poster_width, args.poster_height,
-                                                                 args.patch_num_x, args.patch_num_y)[[2, 0, 1], :, :]
-                    clip_val = 4
-                    mean, std = inverse_distilled.mean(), inverse_distilled.std()
-                    inverse_distilled = np.clip(inverse_distilled, a_min=mean - clip_val * std,
-                                                a_max=mean + clip_val * std)
-                    image_log_dict['inverse_zca_poster'] = wandb.Image(inverse_distilled)
+                        patches = \
+                            np.ascontiguousarray(patches, dtype=np.float32).reshape(patches_shape[0], -1).astype('float32')
+                        patches = patches.dot(zca_inverse)
+                        patches = torch.Tensor(patches.reshape(patches_shape).astype('float32'))
+                        patches = patches.reshape(patches.shape[0], -1, 3)[:, :, [1, 2, 0]].permute(0, 2, 1).reshape(
+                            patches_shape)
+                        inverse_distilled = combine_images_with_fade(patches, args.poster_width, args.poster_height,
+                                                                     args.patch_num_x, args.patch_num_y)[[2, 0, 1], :, :]
+                        clip_val = 4
+                        mean, std = inverse_distilled.mean(), inverse_distilled.std()
+                        inverse_distilled = np.clip(inverse_distilled, a_min=mean - clip_val * std,
+                                                    a_max=mean + clip_val * std)
+                        image_log_dict['inverse_zca_poster'] = wandb.Image(inverse_distilled)
+                        
+                        # Clean up intermediate variables
+                        del patches, patches_shape, inverse_distilled
 
-                image_log_dict['distilled_poster'] = wandb.Image(
-                    curr_distilled_data.squeeze().numpy().transpose(1, 2, 0))
+                    image_log_dict['distilled_poster'] = wandb.Image(
+                        curr_distilled_data.squeeze().numpy().transpose(1, 2, 0))
+                    
+                    # Clean up data copy
+                    del curr_distilled_data
+                    
                 wandb.log(image_log_dict)
+                
+                # Clean up after logging
+                del image_log_dict
+                torch.cuda.empty_cache()
+                gc.collect()
 
             # remember best acc@1 and save checkpoint
             is_best = test_acc[2][tmp_index] > best_acc1
@@ -338,7 +357,7 @@ def main_worker(args):
                                                                                 best_loss1, best_loss_ind))
 
 
-def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, device, distill_steps, args):
+def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, device, distill_steps, args, scaler):
     print('Check the length of the training dataset {}'.format(len(train_loader1.dataset)))
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -380,51 +399,82 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
             if targets.min() < 0 or targets.max() >= model.module.num_classes:
                 print(f"ERROR: Target values out of range! Expected [0, {model.module.num_classes})")
         '''
-        output, _ = model(inputs)
-        '''
-        # Debug: Check output shape
-        if i == 0:  # Only print for first batch
-            print(f"Debug: Output shape: {output.shape}, Expected: (batch_size, {model.module.num_classes})")
-        '''    
-        loss = criterion(output, targets)
+        
+        # Mixed precision forward pass
+        if args.use_mixed_precision:
+            with autocast():
+                output, _ = model(inputs)
+                '''
+                # Debug: Check output shape
+                if i == 0:  # Only print for first batch
+                    print(f"Debug: Output shape: {output.shape}, Expected: (batch_size, {model.module.num_classes})")
+                '''    
+                loss = criterion(output, targets)
+                
+                # Scale loss for gradient accumulation
+                loss = loss / args.grad_accumulation_steps
+        else:
+            output, _ = model(inputs)
+            '''
+            # Debug: Check output shape
+            if i == 0:  # Only print for first batch
+                print(f"Debug: Output shape: {output.shape}, Expected: (batch_size, {model.module.num_classes})")
+            '''    
+            loss = criterion(output, targets)
+            
+            # Scale loss for gradient accumulation
+            loss = loss / args.grad_accumulation_steps
 
         # measure accuracy and record loss
         acc = accuracy(output, targets)
-        losses.update(loss.item(), inputs.size(0))
+        losses.update(loss.item() * args.grad_accumulation_steps, inputs.size(0))
         top1.update(acc, inputs.size(0))
 
-        # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
+        # Mixed precision backward pass
+        if args.use_mixed_precision:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
-        # More efficient memory clearing
-        torch.cuda.empty_cache()
+        # Only perform optimization step every grad_accumulation_steps
+        if (i + 1) % args.grad_accumulation_steps == 0:
+            # More efficient memory clearing
+            torch.cuda.empty_cache()
 
-        # Calculate gradient norm without keeping references
-        with torch.no_grad():
-            grad_tensor = optimizer.param_groups[0]['params'][0].grad
-            if grad_tensor is not None:
-                grad_norm = calculate_grad_norm(torch.norm(grad_tensor, dim=1).detach())
+            # Calculate gradient norm without keeping references
+            with torch.no_grad():
+                # Scale gradients back to original scale for norm calculation
+                grad_tensor = optimizer.param_groups[0]['params'][0].grad
+                if grad_tensor is not None:
+                    # Unscale gradients before calculating norm
+                    if args.use_mixed_precision:
+                        scaler.unscale_(optimizer)
+                    grad_norm = calculate_grad_norm(torch.norm(grad_tensor, dim=1).detach())
+                else:
+                    grad_norm = 0.0
+            
+            grad_acc.append(grad_norm)
+            
+            # obtain the ema norm and perform gradient clipping
+            with torch.no_grad():
+                grad_tensor = optimizer.param_groups[0]['params'][0].grad
+                if grad_tensor is not None:
+                    clip_coef = model.module.ema_update(
+                        (torch.norm(grad_tensor, dim=1) ** 2).sum().item() ** 0.5)
+                else:
+                    clip_coef = 1.0
+
+            torch.nn.utils.clip_grad_norm_(model.module.data, max_norm=clip_coef * 2)
+
+            # Mixed precision optimizer step
+            if args.use_mixed_precision:
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                grad_norm = 0.0
-        
-        grad_acc.append(grad_norm)
-        
-        # obtain the ema norm and perform gradient clipping
-        with torch.no_grad():
-            grad_tensor = optimizer.param_groups[0]['params'][0].grad
-            if grad_tensor is not None:
-                clip_coef = model.module.ema_update(
-                    (torch.norm(grad_tensor, dim=1) ** 2).sum().item() ** 0.5)
-            else:
-                clip_coef = 1.0
+                optimizer.step()
 
-        torch.nn.utils.clip_grad_norm_(model.module.data, max_norm=clip_coef * 2)
-
-        optimizer.step()
-
-        optimizer.zero_grad()
-        model.module.net.zero_grad()
+            optimizer.zero_grad()
+            model.module.net.zero_grad()
 
         if args.train_y:
             with torch.no_grad():
@@ -446,6 +496,45 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
 
     # Clear accumulated gradients after each epoch
     grad_acc = grad_acc[-100:]  # Keep only last 100 gradient norms
+    
+    # Handle remaining gradients if any
+    if len(train_loader1) % args.grad_accumulation_steps != 0:
+        # More efficient memory clearing
+        torch.cuda.empty_cache()
+
+        # Calculate gradient norm without keeping references
+        with torch.no_grad():
+            grad_tensor = optimizer.param_groups[0]['params'][0].grad
+            if grad_tensor is not None:
+                # Unscale gradients before calculating norm
+                if args.use_mixed_precision:
+                    scaler.unscale_(optimizer)
+                grad_norm = calculate_grad_norm(torch.norm(grad_tensor, dim=1).detach())
+            else:
+                grad_norm = 0.0
+        
+        grad_acc.append(grad_norm)
+        
+        # obtain the ema norm and perform gradient clipping
+        with torch.no_grad():
+            grad_tensor = optimizer.param_groups[0]['params'][0].grad
+            if grad_tensor is not None:
+                clip_coef = model.module.ema_update(
+                    (torch.norm(grad_tensor, dim=1) ** 2).sum().item() ** 0.5)
+            else:
+                clip_coef = 1.0
+
+        torch.nn.utils.clip_grad_norm_(model.module.data, max_norm=clip_coef * 2)
+
+        # Mixed precision optimizer step
+        if args.use_mixed_precision:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+
+        optimizer.zero_grad()
+        model.module.net.zero_grad()
     
     return grad_acc, losses.avg, distill_steps
 
