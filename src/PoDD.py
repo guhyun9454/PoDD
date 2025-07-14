@@ -182,6 +182,34 @@ class PoDD(nn.Module):
             out = self.net(x)
         return out
 
+    def get_checkpoint_state(self):
+        """
+        Get additional state that should be saved in checkpoints
+        """
+        state = {
+            'shadow': getattr(self, 'shadow', -1e5),
+            'ema_coef': getattr(self, 'ema_coef', None),
+            'curriculum': self.curriculum,
+            'window': self.window,
+            'current_device': getattr(self, 'current_device', None),
+        }
+        return state
+
+    def load_checkpoint_state(self, state):
+        """
+        Load additional state from checkpoint
+        """
+        if 'shadow' in state:
+            self.shadow = state['shadow']
+        if 'ema_coef' in state:
+            self.ema_coef = state['ema_coef']
+        if 'curriculum' in state:
+            self.curriculum = state['curriculum']
+        if 'window' in state:
+            self.window = state['window']
+        if 'current_device' in state:
+            self.current_device = state['current_device']
+
 
 def random_indices(y, nclass=10, intraclass=False, device='cuda'):
     n = len(y)

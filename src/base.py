@@ -26,6 +26,175 @@ from src.PoDD_utils import combine_images_with_fade, get_crops_from_poster
 from src.util import Summary, AverageMeter, ProgressMeter, accuracy, accuracy_ind
 from src.data_utils import get_dataset, get_transform, init_gaussian, ImageIntervention, project
 
+
+def save_checkpoint(state, is_best, filename='checkpoint.pth', best_filename='best_checkpoint.pth'):
+    """
+    Save checkpoint with comprehensive training state
+    
+    Args:
+        state: Dictionary containing all training state
+        is_best: Whether this is the best model so far
+        filename: Filename for regular checkpoint
+        best_filename: Filename for best checkpoint
+    """
+    checkpoint_dir = Path('checkpoints')
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    checkpoint_path = checkpoint_dir / filename
+    torch.save(state, checkpoint_path)
+    print(f"Checkpoint saved to {checkpoint_path}")
+    
+    if is_best:
+        best_checkpoint_path = checkpoint_dir / best_filename
+        torch.save(state, best_checkpoint_path)
+        print(f"Best checkpoint saved to {best_checkpoint_path}")
+
+
+def load_checkpoint(checkpoint_path, model, optimizer, scaler=None):
+    """
+    Load checkpoint and restore training state
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: Model to load state into
+        optimizer: Optimizer to load state into
+        scaler: GradScaler for mixed precision (optional)
+    
+    Returns:
+        Dictionary containing loaded state
+    """
+    if not os.path.isfile(checkpoint_path):
+        print(f"No checkpoint found at {checkpoint_path}")
+        return None
+    
+    print(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    # Load model state
+    if hasattr(model, 'module'):
+        # Handle DataParallel model
+        model.module.data = checkpoint['model_data'].cuda().requires_grad_(True)
+        if 'model_label' in checkpoint:
+            model.module.label = checkpoint['model_label'].cuda().requires_grad_(True)
+            
+        # Load PoDD model's additional state
+        if 'podd_model_state' in checkpoint and hasattr(model.module, 'load_checkpoint_state'):
+            model.module.load_checkpoint_state(checkpoint['podd_model_state'])
+    else:
+        model.data = checkpoint['model_data'].cuda().requires_grad_(True)
+        if 'model_label' in checkpoint:
+            model.label = checkpoint['model_label'].cuda().requires_grad_(True)
+            
+        # Load PoDD model's additional state
+        if 'podd_model_state' in checkpoint and hasattr(model, 'load_checkpoint_state'):
+            model.load_checkpoint_state(checkpoint['podd_model_state'])
+    
+    # Load optimizer state
+    if 'optimizer_state_dict' in checkpoint:
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Load scaler state for mixed precision
+    if scaler is not None and 'scaler_state_dict' in checkpoint:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
+    
+    print(f"Checkpoint loaded successfully. Resuming from epoch {checkpoint['epoch']}")
+    return checkpoint
+
+
+def create_checkpoint_state(model, optimizer, scaler, epoch, best_acc1, best_loss1, 
+                          best_loss_ind, distill_steps, grad_acc, best_rec, args):
+    """
+    Create checkpoint state dictionary
+    
+    Args:
+        model: Model instance
+        optimizer: Optimizer instance
+        scaler: GradScaler for mixed precision
+        epoch: Current epoch
+        best_acc1: Best accuracy achieved
+        best_loss1: Best loss achieved
+        best_loss_ind: Epoch index of best loss
+        distill_steps: Current distillation steps
+        grad_acc: Gradient accumulation history
+        best_rec: Best results record
+        args: Training arguments
+    
+    Returns:
+        Dictionary containing all checkpoint state
+    """
+    state = {
+        'epoch': epoch,
+        'model_data': model.module.data.clone().cpu().detach(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'best_acc1': best_acc1,
+        'best_loss1': best_loss1,
+        'best_loss_ind': best_loss_ind,
+        'distill_steps': distill_steps,
+        'grad_acc': grad_acc,
+        'best_rec': best_rec,
+        'args': args,
+        'curriculum': model.module.curriculum,
+        'random_state': random.getstate(),
+        'numpy_random_state': np.random.get_state(),
+        'torch_random_state': torch.get_rng_state(),
+    }
+    
+    # Add PoDD model's additional state
+    if hasattr(model.module, 'get_checkpoint_state'):
+        state['podd_model_state'] = model.module.get_checkpoint_state()
+    
+    # Add label if training labels
+    if hasattr(model.module, 'label') and model.module.train_y:
+        state['model_label'] = model.module.label.clone().cpu().detach()
+    
+    # Add scaler state for mixed precision
+    if scaler is not None:
+        state['scaler_state_dict'] = scaler.state_dict()
+    
+    # Add CUDA random state if available
+    if torch.cuda.is_available():
+        state['cuda_random_state'] = torch.cuda.get_rng_state()
+    
+    return state
+
+
+def resume_from_checkpoint(checkpoint_path, model, optimizer, scaler=None):
+    """
+    Resume training from checkpoint
+    
+    Args:
+        checkpoint_path: Path to checkpoint file
+        model: Model instance
+        optimizer: Optimizer instance
+        scaler: GradScaler for mixed precision (optional)
+    
+    Returns:
+        Tuple of (checkpoint_state, start_epoch) or (None, 0) if no checkpoint
+    """
+    if not checkpoint_path or not os.path.isfile(checkpoint_path):
+        return None, 0
+    
+    checkpoint = load_checkpoint(checkpoint_path, model, optimizer, scaler)
+    if checkpoint is None:
+        return None, 0
+    
+    # Restore random states for reproducibility
+    if 'random_state' in checkpoint:
+        random.setstate(checkpoint['random_state'])
+    if 'numpy_random_state' in checkpoint:
+        np.random.set_state(checkpoint['numpy_random_state'])
+    if 'torch_random_state' in checkpoint:
+        torch.set_rng_state(checkpoint['torch_random_state'])
+    if 'cuda_random_state' in checkpoint and torch.cuda.is_available():
+        torch.cuda.set_rng_state(checkpoint['cuda_random_state'])
+    
+    # Restore model curriculum
+    if hasattr(model, 'module'):
+        model.module.curriculum = checkpoint.get('curriculum', model.module.curriculum)
+    
+    return checkpoint, checkpoint['epoch']
+
+
 curriculum_type = {}
 tmp = list(range(20, -5, -5)) * 20
 tmp.sort()
@@ -207,6 +376,27 @@ def main_worker(args):
     if args.ddtype == 'curriculum' and args.cctype != 2:
         model.module.curriculum = [args.totwindow - args.window, args.minwindow, 0, 0][args.cctype]
 
+    # Resume from checkpoint if provided
+    resume_epoch = 0
+    if args.resume:
+        print(f"Resuming training from checkpoint: {args.resume}")
+        checkpoint_state, resume_epoch = resume_from_checkpoint(args.resume, model, optimizer, scaler)
+        if checkpoint_state is not None:
+            best_acc1 = checkpoint_state.get('best_acc1', best_acc1)
+            best_loss1 = checkpoint_state.get('best_loss1', best_loss1)
+            best_loss_ind = checkpoint_state.get('best_loss_ind', best_loss_ind)
+            distill_steps = checkpoint_state.get('distill_steps', distill_steps)
+            grad_acc = checkpoint_state.get('grad_acc', grad_acc)
+            best_rec = checkpoint_state.get('best_rec', best_rec)
+            args.start_epoch = resume_epoch + 1
+            print(f"Resumed from epoch {resume_epoch}, best_acc1: {best_acc1:.4f}, best_loss1: {best_loss1:.4f}")
+
+    # Generate checkpoint filename
+    if args.checkpoint_name:
+        checkpoint_prefix = args.checkpoint_name
+    else:
+        checkpoint_prefix = f"{args.dataset}_{args.arch}_{args.name}"
+
     if model.module.data.get_device() == 0 and args.wandb:
         wandb.init(
             entity="TGwithIU",
@@ -215,8 +405,11 @@ def main_worker(args):
             config=vars(args))
 
     for epoch in range(args.start_epoch, args.epochs):
-        # initialize the EMA
-        if epoch == 0:
+        # initialize the EMA (only if not resuming from checkpoint)
+        if epoch == 0 and not args.resume:
+            model.module.ema_init(args.clip_coef)
+        elif epoch == args.start_epoch and args.resume and not hasattr(model.module, 'shadow'):
+            # Initialize EMA if resuming but EMA state was not saved
             model.module.ema_init(args.clip_coef)
 
         if args.train_y:
@@ -242,6 +435,20 @@ def main_worker(args):
             print(f"[Memory] Epoch {epoch}: Allocated {memory_allocated:.2f}GB, Cached {memory_cached:.2f}GB")
         
         print('The current update step is {}'.format(distill_steps))
+
+        # Save checkpoint periodically
+        if model.module.data.get_device() == 0 and (epoch % args.save_freq == 0 or args.save_all_checkpoints):
+            checkpoint_state = create_checkpoint_state(
+                model, optimizer, scaler, epoch, best_acc1, best_loss1,
+                best_loss_ind, distill_steps, grad_acc, best_rec, args
+            )
+            
+            if args.save_all_checkpoints:
+                checkpoint_filename = f"{checkpoint_prefix}_epoch_{epoch}.pth"
+            else:
+                checkpoint_filename = f"{checkpoint_prefix}_latest.pth"
+            
+            save_checkpoint(checkpoint_state, False, checkpoint_filename)
 
         # evaluate on validation set
         if epoch > 400 * int(5 / args.update_steps):
@@ -328,15 +535,33 @@ def main_worker(args):
                     if args.train_y:
                         best_rec['label'] = model.module.label.data.cpu().clone().numpy()
 
-            if test_loss < best_loss1:
+                    # Save best accuracy checkpoint
+                    checkpoint_state = create_checkpoint_state(
+                        model, optimizer, scaler, epoch, best_acc1, best_loss1,
+                        best_loss_ind, distill_steps, grad_acc, best_rec, args
+                    )
+                    best_acc_filename = f"{checkpoint_prefix}_best_acc.pth"
+                    save_checkpoint(checkpoint_state, True, filename=best_acc_filename)
+
+            is_best_loss = test_loss < best_loss1
+            if is_best_loss:
                 best_loss1 = test_loss
                 best_loss_ind = epoch
 
-                # save the current poster:
-                file_name = wandb.run.id if args.wandb else 'PoDD_run'
-                torch.save(model.module.data.clone().cpu().detach(), f'checkpoints/{file_name}_poster.pt')
-                if args.train_y:
-                    torch.save(model.module.label.clone().cpu().detach(), f'checkpoints/{file_name}_label.pt')
+                if model.module.data.get_device() == 0:
+                    # Save best loss checkpoint
+                    checkpoint_state = create_checkpoint_state(
+                        model, optimizer, scaler, epoch, best_acc1, best_loss1,
+                        best_loss_ind, distill_steps, grad_acc, best_rec, args
+                    )
+                    best_loss_filename = f"{checkpoint_prefix}_best_loss.pth"
+                    save_checkpoint(checkpoint_state, True, filename=best_loss_filename)
+
+                    # Also save individual poster files for backward compatibility
+                    file_name = wandb.run.id if args.wandb else 'PoDD_run'
+                    torch.save(model.module.data.clone().cpu().detach(), f'checkpoints/{file_name}_poster.pt')
+                    if args.train_y:
+                        torch.save(model.module.label.clone().cpu().detach(), f'checkpoints/{file_name}_label.pt')
 
             else:
                 if epoch >= best_loss_ind + 200:

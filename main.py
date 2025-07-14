@@ -62,6 +62,18 @@ if __name__ == '__main__':
     parser.add_argument('--grad_accumulation_steps', type=int, default=1, help='number of gradient accumulation steps')
     parser.add_argument('--use_mixed_precision', action='store_true', help='use mixed precision training')
 
+    # Checkpoint related arguments
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('--save_freq', default=10, type=int,
+                        help='save checkpoint frequency (default: 10 epochs)')
+    parser.add_argument('--checkpoint_dir', default='checkpoints', type=str,
+                        help='directory to save checkpoints (default: checkpoints)')
+    parser.add_argument('--save_all_checkpoints', action='store_true',
+                        help='save checkpoint for every epoch (default: False)')
+    parser.add_argument('--checkpoint_name', default='', type=str,
+                        help='custom checkpoint name prefix (default: auto-generated)')
+
     # ImageNet subset specific args
     parser.add_argument('--imagenet_subset', action='store_true',
                         help='use the 10-class ImageNet subset dataset (overrides --dataset)')
