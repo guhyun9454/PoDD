@@ -222,6 +222,21 @@ def main_worker(args):
         grad_tmp, losses_avg, distill_steps = train(train_loader1, None, model, criterion,
                                                     optimizer, epoch, device, distill_steps, args)
         grad_acc.append(grad_tmp)
+        
+        # Prevent memory accumulation by keeping only recent gradient history
+        if len(grad_acc) > 50:  # Keep only last 50 epochs of gradient data
+            grad_acc = grad_acc[-50:]
+        
+        # Additional memory cleanup after each epoch
+        torch.cuda.empty_cache()
+        gc.collect()
+        
+        # Memory monitoring (optional, can be removed after debugging)
+        if torch.cuda.is_available() and epoch % 10 == 0:
+            memory_allocated = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+            memory_cached = torch.cuda.memory_reserved() / 1024**3      # Convert to GB
+            print(f"[Memory] Epoch {epoch}: Allocated {memory_allocated:.2f}GB, Cached {memory_cached:.2f}GB")
+        
         print('The current update step is {}'.format(distill_steps))
 
         # evaluate on validation set
@@ -357,20 +372,20 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
         i, (inputs, targets) = train1
         inputs = inputs.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        
+        '''
         # Debug: Check target values
         if i == 0:  # Only print for first batch
             print(f"Debug: Batch {i} - targets shape: {targets.shape}, values: {targets}")
             print(f"Debug: Min target: {targets.min()}, Max target: {targets.max()}")
             if targets.min() < 0 or targets.max() >= model.module.num_classes:
                 print(f"ERROR: Target values out of range! Expected [0, {model.module.num_classes})")
-
+        '''
         output, _ = model(inputs)
-        
+        '''
         # Debug: Check output shape
         if i == 0:  # Only print for first batch
             print(f"Debug: Output shape: {output.shape}, Expected: (batch_size, {model.module.num_classes})")
-            
+        '''    
         loss = criterion(output, targets)
 
         # measure accuracy and record loss
@@ -381,15 +396,28 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
-        for clear_cache in range(5):
-            torch.cuda.empty_cache()
+        
+        # More efficient memory clearing
+        torch.cuda.empty_cache()
 
-        grad_norm = calculate_grad_norm(torch.norm(optimizer.param_groups[0]['params'][0].grad.clone().detach(), dim=1))
-
+        # Calculate gradient norm without keeping references
+        with torch.no_grad():
+            grad_tensor = optimizer.param_groups[0]['params'][0].grad
+            if grad_tensor is not None:
+                grad_norm = calculate_grad_norm(torch.norm(grad_tensor, dim=1).detach())
+            else:
+                grad_norm = 0.0
+        
         grad_acc.append(grad_norm)
+        
         # obtain the ema norm and perform gradient clipping
-        clip_coef = model.module.ema_update(
-            (torch.norm(optimizer.param_groups[0]['params'][0].grad.clone().detach(), dim=1) ** 2).sum().item() ** 0.5)
+        with torch.no_grad():
+            grad_tensor = optimizer.param_groups[0]['params'][0].grad
+            if grad_tensor is not None:
+                clip_coef = model.module.ema_update(
+                    (torch.norm(grad_tensor, dim=1) ** 2).sum().item() ** 0.5)
+            else:
+                clip_coef = 1.0
 
         torch.nn.utils.clip_grad_norm_(model.module.data, max_norm=clip_coef * 2)
 
@@ -408,12 +436,17 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
 
         distill_steps += 1
 
-        torch.cuda.empty_cache()
-        gc.collect()
+        # Periodic memory cleanup
+        if i % 10 == 0:  # Every 10 iterations
+            torch.cuda.empty_cache()
+            gc.collect()
 
         if (i + 6) % args.print_freq == 0 and model.module.data.get_device() == 0:
             progress.display(i + 6)
 
+    # Clear accumulated gradients after each epoch
+    grad_acc = grad_acc[-100:]  # Keep only last 100 gradient norms
+    
     return grad_acc, losses.avg, distill_steps
 
 
