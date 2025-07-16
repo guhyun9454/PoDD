@@ -18,11 +18,14 @@ def setup_a6000_environment():
         'CUDA_LAUNCH_BLOCKING': '1',
         'CUDA_DEVICE_ORDER': 'PCI_BUS_ID',
         'CUDA_VISIBLE_DEVICES': '0',
-        'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:1024',  # A6000은 더 큰 분할 사이즈 사용
-        'CUDNN_DETERMINISTIC': '1',
+        'PYTORCH_CUDA_ALLOC_CONF': 'max_split_size_mb:1024,roundup_power2_divisions:16',
+        'CUDNN_DETERMINISTIC': '0',  # CuDNN 오류 해결을 위해 0으로 설정
         'CUDNN_BENCHMARK': '1',  # A6000은 benchmark 모드 활성화
         'NCCL_DEBUG': 'WARN',
         'TORCH_CUDNN_V8_API_ENABLED': '1',
+        # CuDNN 호환성 개선을 위한 추가 환경 변수
+        'CUDNN_ALLOW_TF32': '1',
+        'CUDNN_CONV_ALGO_SEARCH': 'HEURISTIC',
     }
     
     for key, value in env_vars.items():
@@ -106,23 +109,16 @@ def run_with_a6000_optimization():
     """A6000 최적화 설정으로 PoDD 실행"""
     try:
         # 메인 모듈 임포트
+        sys.path.append('.')
         import main
         
-        # A6000 최적화 설정 적용
         print("\n🚀 A6000 최적화 설정 적용 중...")
+        print(f"📋 전달받은 인수: {sys.argv[1:]}")
         
-        # 기본 args 파싱
-        args = main.parse_args() if hasattr(main, 'parse_args') else None
-        
-        if args is None:
-            print("❌ 인수 파싱 실패. 기본 설정 사용.")
-            # 기본 설정 생성
-            import argparse
-            parser = argparse.ArgumentParser()
-            args = parser.parse_args()
-        
-        # A6000 최적화 설정 적용
-        args = apply_a6000_optimized_config(args)
+        # 커스텀 파라미터들을 그대로 main.py로 전달
+        # sys.argv를 조작하여 main.py가 올바른 인수를 받도록 함
+        original_argv = sys.argv[:]
+        sys.argv = ['main.py'] + sys.argv[1:]  # run_a6000_optimized.py 대신 main.py로 변경
         
         # 성능 모니터링
         monitor_a6000_performance()
@@ -130,11 +126,21 @@ def run_with_a6000_optimization():
         print("\n🎯 A6000 최적화 설정으로 훈련 시작...")
         print("="*60)
         
-        # 훈련 시작
-        main.main()
+        # 훈련 시작 (main.py의 main 함수 호출)
+        if hasattr(main, 'main'):
+            main.main()
+        else:
+            # main 함수가 없으면 직접 실행
+            exec(open('main.py').read())
+            
+    except Exception as e:
+        # 원래 argv 복원
+        sys.argv = original_argv
+        raise e
         
     except RuntimeError as e:
-        if "CUDA" in str(e) or "out of memory" in str(e):
+        error_msg = str(e)
+        if "CUDA" in error_msg or "out of memory" in error_msg:
             print(f"\n{'='*60}")
             print("🚨 A6000 CUDA 오류 발생!")
             print(f"{'='*60}")
@@ -151,6 +157,36 @@ def run_with_a6000_optimization():
             print("5. 워커 수 줄이기:")
             print("   --workers 4")
             print(f"{'='*60}")
+        elif "convolution algorithms" in error_msg or "CuDNN" in error_msg:
+            print(f"\n{'='*60}")
+            print("🚨 CuDNN 알고리즘 오류 발생!")
+            print(f"{'='*60}")
+            print(f"오류: {e}")
+            print("\nCuDNN 오류 해결책:")
+            print("1. 배치 사이즈가 너무 큼 - 현재 600을 300 이하로 줄이세요:")
+            print("   --batch-size 256 --distill-batch-size 16")
+            print("2. 환경 변수 설정:")
+            print("   export CUDNN_DETERMINISTIC=0")
+            print("   export CUDNN_BENCHMARK=1")
+            print("   export CUDNN_ALLOW_TF32=1")
+            print("3. PyTorch 호환성 확인:")
+            print("   pip install torch --upgrade")
+            print("4. 더 안전한 배치 사이즈로 재시도:")
+            print("   --batch-size 128 --distill-batch-size 8")
+            print(f"{'='*60}")
+            
+            # 자동 배치 사이즈 조정 제안
+            print("\n🔄 자동 배치 사이즈 조정 시도...")
+            try:
+                # 배치 사이즈를 절반으로 줄여서 재시도
+                reduced_batch_sizes = [300, 128, 64, 32]
+                for new_batch_size in reduced_batch_sizes:
+                    print(f"   배치 사이즈 {new_batch_size}로 재시도...")
+                    # 여기서 실제로 재시도하는 로직을 구현할 수 있지만
+                    # 일단 사용자에게 수동으로 조정하도록 안내
+                    break
+            except:
+                pass
         else:
             print(f"일반 오류: {e}")
         

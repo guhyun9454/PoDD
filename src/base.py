@@ -73,6 +73,26 @@ def get_gpu_memory_info():
     return f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Max: {max_allocated:.2f}GB"
 
 
+def calculate_grad_norm(grad_tensor):
+    """Calculate gradient norm safely"""
+    if grad_tensor is None:
+        return 0.0
+    
+    try:
+        # Calculate norm while handling potential numerical issues
+        norm = torch.norm(grad_tensor, p=2)
+        
+        # Check for NaN or infinite values
+        if torch.isnan(norm) or torch.isinf(norm):
+            return 0.0
+        
+        return float(norm.item())
+    
+    except Exception as e:
+        print(f"[WARNING] Error calculating gradient norm: {e}")
+        return 0.0
+
+
 def save_checkpoint(state, is_best, filename='checkpoint.pth', best_filename='best_checkpoint.pth'):
     """
     Save checkpoint with comprehensive training state
