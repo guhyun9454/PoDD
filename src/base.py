@@ -26,6 +26,45 @@ from src.PoDD_utils import combine_images_with_fade, get_crops_from_poster
 from src.util import Summary, AverageMeter, ProgressMeter, accuracy, accuracy_ind
 from src.data_utils import get_dataset, get_transform, init_gaussian, ImageIntervention, project
 
+# ------------------------------------------------------------
+# Utility: Safe forward pass with automatic cuDNN fallback
+# ------------------------------------------------------------
+# Some cuDNN kernels fail to find a valid algorithm for large batch / resolution
+# combinations. In that case we temporarily disable cuDNN and rerun the forward
+# using PyTorch's native convolution implementation, which is slower but
+# prevents the training run from crashing.
+
+
+def safe_forward(model, inputs):  # noqa: D401
+    """Forward pass that falls back to ATen convolutions on cuDNN failure.
+
+    Parameters
+    ----------
+    model : torch.nn.Module or torch.nn.parallel.DataParallel
+        The network to be executed.
+    inputs : torch.Tensor
+        Input mini-batch.
+
+    Returns
+    -------
+    tuple
+        (output, embedding) as returned by the network.
+    """
+    try:
+        return model(inputs)
+    except RuntimeError as err:
+        # Detect the specific cuDNN algorithm selection failure message.
+        msg = str(err).lower()
+        if "no valid convolution algorithms" in msg or "cudnn" in msg:
+            prev_enabled = cudnn.enabled
+            cudnn.enabled = False
+            try:
+                return model(inputs)
+            finally:
+                cudnn.enabled = prev_enabled
+        # Re-raise if it is a different error.
+        raise
+
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth', best_filename='best_checkpoint.pth'):
     """
@@ -628,7 +667,7 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
         # Mixed precision forward pass
         if args.use_mixed_precision:
             with autocast():
-                output, _ = model(inputs)
+                output, _ = safe_forward(model, inputs)
                 '''
                 # Debug: Check output shape
                 if i == 0:  # Only print for first batch
@@ -639,7 +678,7 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
                 # Scale loss for gradient accumulation
                 loss = loss / args.grad_accumulation_steps
         else:
-            output, _ = model(inputs)
+            output, _ = safe_forward(model, inputs)
             '''
             # Debug: Check output shape
             if i == 0:  # Only print for first batch

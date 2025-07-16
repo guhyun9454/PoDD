@@ -1,6 +1,14 @@
 """ Main file to run the code """
 import argparse
+import torch  # Added for TF32 enabling
 from src.base import main_worker
+
+# Enable TF32 for Ampere or later GPUs (e.g., RTX A6000)
+# This allows cuDNN and cuBLAS to use TensorFloat-32 kernels, offering
+# significant speedups with a small precision trade-off and can reduce
+# workspace memory usage, which helps avoid "no valid convolution algorithms" errors.
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Clean Train')
