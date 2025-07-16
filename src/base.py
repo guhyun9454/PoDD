@@ -27,6 +27,52 @@ from src.util import Summary, AverageMeter, ProgressMeter, accuracy, accuracy_in
 from src.data_utils import get_dataset, get_transform, init_gaussian, ImageIntervention, project
 
 
+def safe_cuda_empty_cache():
+    """Safely clear CUDA cache with error handling"""
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()  # Wait for all operations to complete
+            torch.cuda.empty_cache()
+            gc.collect()  # Also run garbage collection
+    except RuntimeError as e:
+        print(f"[WARNING] CUDA cache clearing failed: {e}")
+        # Try to recover by synchronizing and retrying once
+        try:
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        except RuntimeError as e2:
+            print(f"[ERROR] CUDA cache clearing failed again: {e2}")
+            # Continue without clearing cache
+
+
+def check_cuda_health():
+    """Check CUDA health status"""
+    if not torch.cuda.is_available():
+        return True
+    
+    try:
+        # Check if we can allocate a small tensor
+        test_tensor = torch.zeros(10, device='cuda')
+        del test_tensor
+        torch.cuda.synchronize()
+        return True
+    except RuntimeError as e:
+        print(f"[ERROR] CUDA health check failed: {e}")
+        return False
+
+
+def get_gpu_memory_info():
+    """Get GPU memory usage information"""
+    if not torch.cuda.is_available():
+        return "CUDA not available"
+    
+    allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+    reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+    max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+    
+    return f"GPU Memory - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB, Max: {max_allocated:.2f}GB"
+
+
 def save_checkpoint(state, is_best, filename='checkpoint.pth', best_filename='best_checkpoint.pth'):
     """
     Save checkpoint with comprehensive training state
@@ -425,14 +471,11 @@ def main_worker(args):
             grad_acc = grad_acc[-50:]
         
         # Additional memory cleanup after each epoch
-        torch.cuda.empty_cache()
-        gc.collect()
+        safe_cuda_empty_cache()
         
         # Memory monitoring (optional, can be removed after debugging)
         if torch.cuda.is_available() and epoch % 10 == 0:
-            memory_allocated = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-            memory_cached = torch.cuda.memory_reserved() / 1024**3      # Convert to GB
-            print(f"[Memory] Epoch {epoch}: Allocated {memory_allocated:.2f}GB, Cached {memory_cached:.2f}GB")
+            print(f"[Memory] Epoch {epoch}: {get_gpu_memory_info()}")
         
         print('The current update step is {}'.format(distill_steps))
 
@@ -518,8 +561,7 @@ def main_worker(args):
                 
                 # Clean up after logging
                 del image_log_dict
-                torch.cuda.empty_cache()
-                gc.collect()
+                safe_cuda_empty_cache()
 
             # remember best acc@1 and save checkpoint
             is_best = test_acc[2][tmp_index] > best_acc1
@@ -663,9 +705,11 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
         
         # Only perform optimization step every grad_accumulation_steps
         if (i + 1) % args.grad_accumulation_steps == 0:
-            # More efficient memory clearing
-            torch.cuda.empty_cache()
-
+            # Check CUDA health before proceeding
+            if not check_cuda_health():
+                print(f"[ERROR] CUDA health check failed at batch {i}, skipping optimization step")
+                continue
+            
             # Calculate gradient norm without keeping references
             with torch.no_grad():
                 # Scale gradients back to original scale for norm calculation
@@ -700,6 +744,9 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
 
             optimizer.zero_grad()
             model.module.net.zero_grad()
+            
+            # Safe memory cleanup after optimization
+            safe_cuda_empty_cache()
 
         if args.train_y:
             with torch.no_grad():
@@ -711,10 +758,11 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
 
         distill_steps += 1
 
-        # Periodic memory cleanup
+        # Periodic memory cleanup and monitoring
         if i % 10 == 0:  # Every 10 iterations
-            torch.cuda.empty_cache()
-            gc.collect()
+            safe_cuda_empty_cache()
+            if i % 50 == 0:  # Print memory info every 50 iterations
+                print(f"[Memory] Batch {i}: {get_gpu_memory_info()}")
 
         if (i + 6) % args.print_freq == 0 and model.module.data.get_device() == 0:
             progress.display(i + 6)
@@ -724,9 +772,11 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
     
     # Handle remaining gradients if any
     if len(train_loader1) % args.grad_accumulation_steps != 0:
-        # More efficient memory clearing
-        torch.cuda.empty_cache()
-
+        # Check CUDA health before handling remaining gradients
+        if not check_cuda_health():
+            print("[ERROR] CUDA health check failed for remaining gradients, skipping")
+            return grad_acc, losses.avg, distill_steps
+        
         # Calculate gradient norm without keeping references
         with torch.no_grad():
             grad_tensor = optimizer.param_groups[0]['params'][0].grad
@@ -760,6 +810,9 @@ def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, devi
 
         optimizer.zero_grad()
         model.module.net.zero_grad()
+        
+        # Safe memory cleanup after final optimization
+        safe_cuda_empty_cache()
     
     return grad_acc, losses.avg, distill_steps
 

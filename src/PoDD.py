@@ -130,14 +130,27 @@ class PoDD(nn.Module):
                 
                 # Periodic memory cleanup during inner loop
                 if i % 5 == 0:
-                    torch.cuda.empty_cache()
+                    try:
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                    except RuntimeError as e:
+                        print(f"[WARNING] CUDA cache clearing failed in PoDD inner loop: {e}")
+                        continue
 
             x = self.real_intervention(x, dtype='real')
             result = fnet(x)
             
             # Clear context before returning
             del fnet, diffopt
-            torch.cuda.empty_cache()
+            
+            # Safe memory cleanup before returning
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+            except RuntimeError as e:
+                print(f"[WARNING] CUDA cache clearing failed at end of forward: {e}")
             
             return result
 
