@@ -35,6 +35,40 @@ curriculum_type[1] = tmp
 epoch_list = [300, 600, 1000, 2000]
 
 
+def save_full_state(path, epoch, model, optimizer, args, best_acc1, best_loss1, best_loss_ind, distill_steps):
+    """ Write everything needed to continue this run in a later process.
+
+    The student network is not included on purpose: PoDD.forward() rebuilds self.net and its
+    inner optimizer from scratch on every call, so no student state survives an epoch anyway.
+    """
+    state = {
+        'epoch': epoch,
+        'poster': model.module.data.detach().cpu().clone(),
+        'label': model.module.label.detach().cpu().clone() if args.train_y else None,
+        'optimizer': optimizer.state_dict(),
+        'curriculum': model.module.curriculum,
+        'ema_shadow': getattr(model.module, 'shadow', None),
+        'ema_coef': getattr(model.module, 'ema_coef', args.clip_coef),
+        'inner_lr': model.module.lr.detach().cpu() if torch.is_tensor(model.module.lr) else model.module.lr,
+        'best_acc1': best_acc1,
+        'best_loss1': best_loss1,
+        'best_loss_ind': best_loss_ind,
+        'distill_steps': distill_steps,
+        'test_freq': args.test_freq,
+        'rng': {
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'numpy': np.random.get_state(),
+            'python': random.getstate(),
+        },
+    }
+    # Write-then-rename: a job killed mid-write must not destroy the previous checkpoint.
+    tmp = path + '.tmp'
+    torch.save(state, tmp)
+    os.replace(tmp, path)
+    print('[resume] wrote full state at epoch {} -> {}'.format(epoch, path), flush=True)
+
+
 def main_worker(args):
     """ Main worker function """
     global best_acc1, best_loss1
@@ -112,7 +146,29 @@ def main_worker(args):
         get_crops_from_poster(data, image_size_x, image_size_y,
                               args.patch_num_x, args.patch_num_y, indexes_subset=indexes_subset)
 
-    if args.load_poster_run_name == '':
+    # A resume supplies the poster/labels itself, so it takes precedence over both the random
+    # init and --load_poster_run_name.
+    resume_state = None
+    if args.resume and os.path.isfile(args.resume):
+        resume_state = torch.load(args.resume, map_location='cpu')
+        print('[resume] loaded {} (saved at epoch {})'.format(args.resume, resume_state['epoch']), flush=True)
+    elif args.resume:
+        print('[resume] {} not found — starting from scratch'.format(args.resume), flush=True)
+
+    if resume_state is not None:
+        distilled_data = resume_state['poster']
+        if resume_state['label'] is not None:
+            y_init = resume_state['label']
+        else:
+            # train_y was off, so the labels are a deterministic function of the geometry and
+            # were never optimized — recompute rather than carry them in the checkpoint.
+            y_init = PoDDL.get_poster_labels(class_order, image_size_x, image_size_y,
+                                             args.class_area_width, args.class_area_height,
+                                             args.poster_width, args.poster_height,
+                                             args.poster_class_num_x, args.poster_class_num_y,
+                                             args.patch_num_x, args.patch_num_y)
+
+    elif args.load_poster_run_name == '':
         class_areas = init_gaussian(num_classes, 1, int(channel * args.class_area_width * args.class_area_height))
         class_areas = project(class_areas)
         class_areas = class_areas.reshape(num_classes, channel, args.class_area_width, args.class_area_height)
@@ -203,6 +259,35 @@ def main_worker(args):
     if args.ddtype == 'curriculum' and args.cctype != 2:
         model.module.curriculum = [args.totwindow - args.window, args.minwindow, 0, 0][args.cctype]
 
+    # Initialize the EMA here rather than inside the epoch loop. The original code did it under
+    # `if epoch == 0`, which never fires when start_epoch > 0, so any resume died with
+    # AttributeError on the first ema_update.
+    model.module.ema_init(args.clip_coef)
+
+    if resume_state is not None:
+        optimizer.load_state_dict(resume_state['optimizer'])
+        model.module.curriculum = resume_state['curriculum']
+        if resume_state['ema_shadow'] is not None:
+            model.module.shadow = resume_state['ema_shadow']
+        model.module.ema_coef = resume_state['ema_coef']
+        best_acc1 = resume_state['best_acc1']
+        best_loss1 = resume_state['best_loss1']
+        best_loss_ind = resume_state['best_loss_ind']
+        distill_steps = resume_state['distill_steps']
+        args.test_freq = resume_state['test_freq']
+        args.start_epoch = resume_state['epoch'] + 1
+
+        rng = resume_state.get('rng')
+        if rng is not None:
+            torch.set_rng_state(rng['torch'])
+            if rng['cuda'] is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state_all(rng['cuda'])
+            np.random.set_state(rng['numpy'])
+            random.setstate(rng['python'])
+
+        print('[resume] continuing at epoch {} (best_acc1={}, best_loss1={}, distill_steps={})'.format(
+            args.start_epoch, best_acc1, best_loss1, distill_steps), flush=True)
+
     if model.module.data.get_device() == 0 and args.wandb:
         wandb.init(
             entity="TGwithIU",
@@ -211,10 +296,6 @@ def main_worker(args):
             config=vars(args))
 
     for epoch in range(args.start_epoch, args.epochs):
-        # initialize the EMA
-        if epoch == 0:
-            model.module.ema_init(args.clip_coef)
-
         if args.train_y:
             print(
                 f"[DEBUG] Max={float(optimizer.param_groups[1]['params'][0].max().cpu())} Min={float(optimizer.param_groups[1]['params'][0].min().cpu())}")
@@ -321,6 +402,13 @@ def main_worker(args):
 
             print('train loss {}, epoch {}, best loss {}, best_epoch {}'.format(test_loss, epoch,
                                                                                 best_loss1, best_loss_ind))
+
+        # Full-state checkpoint at the end of the epoch, so what is on disk is always a
+        # completed epoch. Written every N epochs to keep the I/O off the critical path.
+        if args.state_ckpt and model.module.data.get_device() == 0 \
+                and ((epoch + 1) % args.state_ckpt_every == 0 or epoch + 1 == args.epochs):
+            save_full_state(args.state_ckpt, epoch, model, optimizer, args,
+                            best_acc1, best_loss1, best_loss_ind, distill_steps)
 
 
 def train(train_loader1, train_loader2, model, criterion, optimizer, epoch, device, distill_steps, args):

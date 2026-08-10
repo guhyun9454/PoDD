@@ -68,6 +68,17 @@ if __name__ == '__main__':
     parser.add_argument('--imagenet_subset_key', type=str, default='custom',
                         help='subset name in {nette, woof, fruits, yellow, cats, birds, geo, food, mammals, marine, a, b, c, d, e}')
 
+    # Full-state checkpointing, so a run can be chained across scheduler walltime limits.
+    # --load_poster_run_name only restores the poster and labels; this restores the optimizer,
+    # epoch counter, EMA, curriculum and RNG as well, which is what makes a restart a true
+    # continuation rather than a warm start.
+    parser.add_argument('--state_ckpt', type=str, default='',
+                        help='path of the full-state checkpoint to write (empty = disabled)')
+    parser.add_argument('--state_ckpt_every', type=int, default=10,
+                        help='write the full-state checkpoint every N epochs')
+    parser.add_argument('--resume', type=str, default='',
+                        help='full-state checkpoint to resume from; ignored if the file is absent')
+
     args = parser.parse_args()
 
     # override dataset if imagenet_subset flag provided
