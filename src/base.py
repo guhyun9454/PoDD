@@ -16,7 +16,15 @@ import torch.backends.cudnn as cudnn
 
 from tqdm import tqdm
 from pathlib import Path
-from pytorch_lightning import seed_everything
+
+
+# Local stand-in for pytorch_lightning.seed_everything. This is the same shim the kdst-219
+# run carried as an uncommitted edit, kept so this branch reproduces that run exactly; it
+# also drops the pytorch_lightning import, which fails under pl 2.x.
+def seed_everything(seed):
+    import random as _r, numpy as _np, torch as _t
+    _r.seed(seed); _np.random.seed(seed); _t.manual_seed(seed)
+
 
 from src.PoCO import PoCO
 from src.PoDD import PoDD
