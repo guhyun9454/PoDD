@@ -10,7 +10,9 @@
 set -x
 source /ceph_data/jihye4118/miniconda3/etc/profile.d/conda.sh
 
-conda create -y -n podd_bw python=3.9 || exit 1
+# conda-forge only: sidesteps the Anaconda-channel ToS gate (a licence acceptance we
+# don't make on a borrowed account) — per the seraph skill's standing guidance.
+conda create -y -n podd_bw -c conda-forge --override-channels python=3.9 || exit 1
 conda activate podd_bw
 
 export TMPDIR=/nas2/data/jihye4118/tmp
