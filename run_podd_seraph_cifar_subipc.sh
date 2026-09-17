@@ -54,7 +54,14 @@ mkdir -p "$RUN_DIR"
 echo "resolved HF_HOME=$HF_HOME  HF_HUB_OFFLINE=$HF_HUB_OFFLINE  RUN_DIR=$RUN_DIR  geom ${W}x${H} cls ${CX}x${CY} patch ${PX}x${PY}"
 
 source /ceph_data/jihye4118/miniconda3/etc/profile.d/conda.sh
-conda activate /nas2/data/jihye4118/envs/podd
+# Blackwell nodes (ariel-n1, RTX PRO 6000, sm_120) need the torch 2.7+cu128 env; the
+# stock podd env (torch 1.13, sm_86 max) crashes there ("numel: integer multiplication
+# overflow" after the arch warning — how jobs 425409/425410 died). Autodetect per node.
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+case "$GPU_NAME" in
+  *Blackwell*|*"PRO 6000"*) conda activate podd_bw ;;
+  *)                        conda activate /nas2/data/jihye4118/envs/podd ;;
+esac
 python -c "import torch;print('torch',torch.__version__,'gpu',torch.cuda.get_device_name(0))"
 
 # Per-process GPU memory sampler (records only our own PID).
