@@ -158,7 +158,9 @@ def main_worker(args):
     # init and --load_poster_run_name.
     resume_state = None
     if args.resume and os.path.isfile(args.resume):
-        resume_state = torch.load(args.resume, map_location='cpu')
+        # weights_only=False: our own full-state checkpoint carries rng/numpy objects;
+        # torch>=2.6 defaults weights_only=True and refuses it. Kwarg exists since 1.13.
+        resume_state = torch.load(args.resume, map_location='cpu', weights_only=False)
         print('[resume] loaded {} (saved at epoch {})'.format(args.resume, resume_state['epoch']), flush=True)
     elif args.resume:
         print('[resume] {} not found — starting from scratch'.format(args.resume), flush=True)
@@ -194,8 +196,8 @@ def main_worker(args):
             y_init = PoDDL.init_label_array(distilled_data.shape, class_order, args.comp_ipc)
 
     else:
-        distilled_data = torch.load(f'checkpoints/{args.load_poster_run_name}_poster.pt')
-        y_init = torch.load(f'checkpoints/{args.load_poster_run_name}_label.pt')
+        distilled_data = torch.load(f'checkpoints/{args.load_poster_run_name}_poster.pt', weights_only=False)
+        y_init = torch.load(f'checkpoints/{args.load_poster_run_name}_label.pt', weights_only=False)
 
     label_cropping_function = None
     if args.train_y:
