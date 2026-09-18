@@ -41,14 +41,19 @@ for d in /data2 /data3 /data4; do
     if [ "${avail:-0}" -ge 8000 ]; then DATA_PARENT="$d/local_datasets/jihye4118"; break; fi
   fi
 done
-[ -z "$DATA_PARENT" ] && DATA_PARENT=/ceph_data/jihye4118/datasets
-mkdir -p "$DATA_PARENT"
-(
-  flock 9
-  [ -d "$DATA_PARENT/ImageNet_nette/train" ] || \
-    tar -xzf /ceph_data/jihye4118/datasets/ImageNet_nette.tar.gz -C "$DATA_PARENT"
-) 9>"$DATA_PARENT/.nette_stage.lock"
-DATA=$DATA_PARENT/ImageNet_nette
+if [ -z "$DATA_PARENT" ]; then
+  # Node without local disks (ariel-n1: /data there is an NFS user share): read the NAS
+  # copy directly — user decision 2026-09-18; the Ceph dataset copy was deleted.
+  DATA=/nas2/data/jihye4118/datasets/ImageNet_nette
+else
+  mkdir -p "$DATA_PARENT"
+  (
+    flock 9
+    [ -d "$DATA_PARENT/ImageNet_nette/train" ] || \
+      tar -xzf /nas2/data/guhyun9454/ImageNet/ImageNet_nette.tar.gz -C "$DATA_PARENT"
+  ) 9>"$DATA_PARENT/.nette_stage.lock"
+  DATA=$DATA_PARENT/ImageNet_nette
+fi
 fi
 echo "resolved DATA=$DATA"
 
