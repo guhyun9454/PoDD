@@ -9,9 +9,12 @@ NAS=/nas2/data/jihye4118
 
 mkdir -p "$CEPH/g" "$CEPH/runs" "$CEPH/datasets" "$CEPH/torch_home"
 
-# 1. Repo (with .git), then fast-forward to the Ceph-path launch scripts and strip CRLF.
+# 1. Repo (with .git), then force the tree to origin's tip and strip CRLF. reset --hard
+# (not pull): the NAS working tree carries CRLF-stripped scripts that abort a merge.
 rsync -a "$NAS/g/PoDD/" "$CEPH/g/PoDD/" || exit 1
-cd "$CEPH/g/PoDD" && git pull origin sm-full-resume && sed -i 's/\r$//' run_podd_seraph_cifar_subipc.sh run_podd_seraph_ipc05.sh run_podd_seraph_ipc025.sh seraph_migrate_ceph.sh || exit 1
+cd "$CEPH/g/PoDD" || exit 1
+git fetch origin sm-full-resume && git reset --hard FETCH_HEAD || exit 1
+sed -i 's/\r$//' ./*.sh
 
 # 2. Active run dirs (state.pt + samplers; small). Completed-run archives stay on NAS.
 for d in podd_cifar10_ipc01 podd_cifar10_ipc02 podd_cifar10_ipc03 podd_cifar10_ipc04 \
