@@ -13,15 +13,32 @@
 # the resulting HF downloads blew the Ceph quota 2026-08-01). Everything writable is on NAS.
 set -x
 
-export HF_HOME=/nas2/data/jihye4118/hf_cache
+export HF_HOME=/ceph_data/jihye4118/hf_cache
 export HF_HUB_OFFLINE=1          # CLIP is pre-fetched; a job must never hit the network
 export TRANSFORMERS_OFFLINE=1
-export TORCH_HOME=/nas2/data/jihye4118/torch_home
+export TORCH_HOME=/ceph_data/jihye4118/torch_home
 export PYTHONUNBUFFERED=1
 
-REPO=/nas2/data/jihye4118/g/PoDD
-RUN_DIR=/nas2/data/jihye4118/runs/podd_nette_128_ipc025
-DATA=/nas2/data/jihye4118/datasets/ImageNet_nette
+REPO=/ceph_data/jihye4118/g/PoDD
+RUN_DIR=/ceph_data/jihye4118/runs/podd_nette_128_ipc025
+# Node-local dataset staging (NAS is backup storage, 2026-09-18): first
+# /data{2,3,4}/local_datasets with >=8 GB free, else Ceph. flock guards the
+# two-jobs-per-node race on the extract.
+DATA_PARENT=""
+for d in /data2 /data3 /data4; do
+  if [ -d "$d/local_datasets" ]; then
+    avail=$(df -Pm "$d" | awk 'NR==2{print $4}')
+    if [ "${avail:-0}" -ge 8000 ]; then DATA_PARENT="$d/local_datasets/jihye4118"; break; fi
+  fi
+done
+[ -z "$DATA_PARENT" ] && DATA_PARENT=/ceph_data/jihye4118/datasets
+mkdir -p "$DATA_PARENT"
+(
+  flock 9
+  [ -d "$DATA_PARENT/ImageNet_nette/train" ] || \
+    tar -xzf /ceph_data/jihye4118/datasets/ImageNet_nette.tar.gz -C "$DATA_PARENT"
+) 9>"$DATA_PARENT/.nette_stage.lock"
+DATA=$DATA_PARENT/ImageNet_nette
 
 mkdir -p "$RUN_DIR"
 echo "resolved HF_HOME=$HF_HOME  HF_HUB_OFFLINE=$HF_HUB_OFFLINE  RUN_DIR=$RUN_DIR"
@@ -32,7 +49,7 @@ source /ceph_data/jihye4118/miniconda3/etc/profile.d/conda.sh
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
 case "$GPU_NAME" in
   *Blackwell*|*"PRO 6000"*) conda activate podd_bw ;;
-  *)                        conda activate /nas2/data/jihye4118/envs/podd ;;
+  *)                        conda activate podd ;;   # Ceph clone of the NAS podd env
 esac
 python -c "import torch;print('torch',torch.__version__,'gpu',torch.cuda.get_device_name(0))"
 

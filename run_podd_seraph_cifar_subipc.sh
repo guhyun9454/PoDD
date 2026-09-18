@@ -40,15 +40,33 @@ case "$IPC" in
   *) echo "unknown IPC tag: '$IPC' (want 05|04|03|02|01)"; exit 2 ;;
 esac
 
-export HF_HOME=/nas2/data/jihye4118/hf_cache
+# NAS is backup storage (admin policy, 2026-09-18): execution set lives on Ceph, and the
+# dataset is staged into the node-local disk at startup so steady-state I/O is local.
+export HF_HOME=/ceph_data/jihye4118/hf_cache
 export HF_HUB_OFFLINE=1          # CLIP (PoCO) is pre-fetched; a job must never hit the network
 export TRANSFORMERS_OFFLINE=1
-export TORCH_HOME=/nas2/data/jihye4118/torch_home
+export TORCH_HOME=/ceph_data/jihye4118/torch_home
 export PYTHONUNBUFFERED=1
 
-REPO=/nas2/data/jihye4118/g/PoDD
-RUN_DIR=/nas2/data/jihye4118/runs/podd_cifar10_ipc$IPC
-DATA_ROOT=/nas2/data/jihye4118/datasets   # main.py appends /cifar10
+REPO=/ceph_data/jihye4118/g/PoDD
+RUN_DIR=/ceph_data/jihye4118/runs/podd_cifar10_ipc$IPC
+
+# Node-local dataset root: first /data{2,3,4}/local_datasets with >=5 GB free;
+# falls back to Ceph if the node has none. flock guards the two-jobs-per-node race.
+DATA_ROOT=""
+for d in /data2 /data3 /data4; do
+  if [ -d "$d/local_datasets" ]; then
+    avail=$(df -Pm "$d" | awk 'NR==2{print $4}')
+    if [ "${avail:-0}" -ge 5000 ]; then DATA_ROOT="$d/local_datasets/jihye4118"; break; fi
+  fi
+done
+[ -z "$DATA_ROOT" ] && DATA_ROOT=/ceph_data/jihye4118/datasets
+mkdir -p "$DATA_ROOT/cifar10"
+(
+  flock 9
+  [ -f "$DATA_ROOT/cifar10/cifar-10-python.tar.gz" ] || \
+    cp /ceph_data/jihye4118/datasets/cifar-10-python.tar.gz "$DATA_ROOT/cifar10/"
+) 9>"$DATA_ROOT/cifar10/.stage.lock"
 
 mkdir -p "$RUN_DIR"
 echo "resolved HF_HOME=$HF_HOME  HF_HUB_OFFLINE=$HF_HUB_OFFLINE  RUN_DIR=$RUN_DIR  geom ${W}x${H} cls ${CX}x${CY} patch ${PX}x${PY}"
@@ -60,7 +78,7 @@ source /ceph_data/jihye4118/miniconda3/etc/profile.d/conda.sh
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
 case "$GPU_NAME" in
   *Blackwell*|*"PRO 6000"*) conda activate podd_bw ;;
-  *)                        conda activate /nas2/data/jihye4118/envs/podd ;;
+  *)                        conda activate podd ;;   # Ceph clone of the NAS podd env
 esac
 python -c "import torch;print('torch',torch.__version__,'gpu',torch.cuda.get_device_name(0))"
 
