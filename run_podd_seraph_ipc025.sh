@@ -24,6 +24,16 @@ RUN_DIR=/ceph_data/jihye4118/runs/podd_nette_128_ipc025
 # Node-local dataset staging (NAS is backup storage, 2026-09-18): first
 # /data{2,3,4}/local_datasets with >=8 GB free, else Ceph. flock guards the
 # two-jobs-per-node race on the extract.
+# Reuse an existing node-local copy first (jh staged the subsets on several v-nodes).
+DATA=""
+for d in /data2 /data3 /data4; do
+  for u in jihye4118 jh guhyun9454; do
+    if [ -d "$d/local_datasets/$u/ImageNet_nette/train" ]; then
+      DATA="$d/local_datasets/$u/ImageNet_nette"; break 2
+    fi
+  done
+done
+if [ -z "$DATA" ]; then
 DATA_PARENT=""
 for d in /data2 /data3 /data4; do
   if [ -d "$d/local_datasets" ]; then
@@ -39,6 +49,8 @@ mkdir -p "$DATA_PARENT"
     tar -xzf /ceph_data/jihye4118/datasets/ImageNet_nette.tar.gz -C "$DATA_PARENT"
 ) 9>"$DATA_PARENT/.nette_stage.lock"
 DATA=$DATA_PARENT/ImageNet_nette
+fi
+echo "resolved DATA=$DATA"
 
 mkdir -p "$RUN_DIR"
 echo "resolved HF_HOME=$HF_HOME  HF_HUB_OFFLINE=$HF_HUB_OFFLINE  RUN_DIR=$RUN_DIR"

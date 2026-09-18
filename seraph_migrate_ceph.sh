@@ -36,8 +36,12 @@ rsync -a "$NAS/hf_cache/hub/models--openai--clip-vit-base-patch32" "$CEPH/hf_cac
 # did not carry into batch jobs — re-accept here (idempotent) before the clone.
 source "$CEPH/miniconda3/etc/profile.d/conda.sh"
 conda tos accept --override-channels -c https://repo.anaconda.com/pkgs/main -c https://repo.anaconda.com/pkgs/r || true
-conda create -y -n podd --clone "$NAS/envs/podd" || exit 1
+conda env list | awk '{print $1}' | grep -qx podd || conda create -y -n podd --clone "$NAS/envs/podd" || exit 1
 conda activate podd
+# --clone drops some pip-installed packages (kornia was missing on the first pass) —
+# top up from requirements.txt minus the intentionally different/absent ones.
+grep -vE '^(torch|torchvision|pytorch-lightning)==' requirements.txt > /tmp/podd_req_fill.txt
+pip install --no-cache-dir -r /tmp/podd_req_fill.txt || exit 1
 python -c "import torch, higher, transformers, kornia; print('clone import OK, torch', torch.__version__)" || exit 1
 
 ls -la "$CEPH/datasets/"
